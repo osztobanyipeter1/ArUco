@@ -109,7 +109,7 @@ class MultiArUcoSLAM:
                     
                     # Marker pozíció tárolása
                     self.marker_world_positions[marker_id] = (R_world_to_marker, t_world_to_marker)
-                    self.marker_confidence[marker_id] = 0.5  # Kezdeti bizalom
+                    self.marker_confidence[marker_id] = 0.1  # Kezdeti bizalom
                 
                 # Marker bizalom frissítése, növelése, minden egyes észlelés esetén
                 if marker_id in self.marker_confidence:
@@ -118,7 +118,7 @@ class MultiArUcoSLAM:
             
             return camera_position
         
-        # Ha nincs referencia marker, tehát az első marker, próbálkozunk ismert markerekkel
+        # Ha nincs referencia marker a láthatáron, tehát az első marker, próbálkozunk ismert markerekkel
         for marker_id in detected_markers:
             if marker_id in self.marker_world_positions:
                 # Kamera pozíció számítása ismert marker alapján
@@ -142,7 +142,7 @@ class MultiArUcoSLAM:
             return
         pass
     
-    def update_visualization(self, camera_position=None):
+    def update_visualization(self, camera_position=None, detected_markers=None):
         #3D vizualizáció frissítése
         self.ax.clear()
         
@@ -170,7 +170,7 @@ class MultiArUcoSLAM:
                           normal[0], normal[1], normal[2],
                           length=5, color=colors[i], alpha=0.7)
         
-        # Kamera pozíció és trajektória, tehát az aktuális pozíció megadása, és rajzolása a koordináta-rendszerben pirosan
+        # Kamera pozíció és trajektória (a kamera pályája), tehát az aktuális pozíció megadása, és rajzolása a koordináta-rendszerben pirosan
         if camera_position is not None:
             self.camera_positions.append(camera_position)
             
@@ -184,7 +184,15 @@ class MultiArUcoSLAM:
             
             # Aktuális kamera pozíció
             self.ax.scatter(cam_pos_array[-1,0], cam_pos_array[-1,1], cam_pos_array[-1,2], 
-                           c='red', s=150, marker='^', label='Kamera')
+                           c='red', s=150, label='Kamera')
+            
+            if camera_position is not None and self.reference_marker_id in detected_markers:
+                ref_data = detected_markers[self.reference_marker_id]
+                R_cam_to_ref = cv.Rodrigues(ref_data['rvec'])[0]
+                camera_z_axis = R_cam_to_ref.T @ np.array([0, 0, 1])
+                self.ax.quiver(camera_position[0], camera_position[1], camera_position[2],
+                camera_z_axis[0], camera_z_axis[1], camera_z_axis[2],
+                length=8, color='green', label='Kamera nézés iránya')
         
         # Tengelyek és címkék
         self.ax.set_xlabel('X (cm)')
@@ -286,7 +294,7 @@ def main():
             camera_position = slam.update_marker_map(detected_markers)
             
             # Vizualizáció frissítése
-            slam.update_visualization(camera_position)
+            slam.update_visualization(camera_position, detected_markers)
             
             # Markerek rajzolása az eredeti képre
             for marker_id, data in detected_markers.items():

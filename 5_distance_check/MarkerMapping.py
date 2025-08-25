@@ -7,13 +7,13 @@ from mpl_toolkits.mplot3d import Axes3D
 # Kalibrációs adatok betöltése
 calib_data_path = "../calib_data/MultiMatrix.npz"
 calib_data = np.load(calib_data_path)
-cam_mat = calib_data["camMatrix"]
-dist_coef = calib_data["distCoef"]
+cam_mat = calib_data["camMatrix"] #3x3 belső kamera mátrix (fókusztávolság, főpont koordináták)
+dist_coef = calib_data["distCoef"] #lencsedisztorzió együtthatók
 
 MARKER_SIZE = 10  # centiméter
-marker_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
-param_markers = aruco.DetectorParameters()
-detector = aruco.ArucoDetector(marker_dict, param_markers)
+marker_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250) #5x5 pixeles marker szótár, 250 különböző marker
+param_markers = aruco.DetectorParameters() #detektálási paraméterek (küszöbök, stb stb)
+detector = aruco.ArucoDetector(marker_dict, param_markers) #ténylegese detektor objektum
 
 # 3D vizualizáció
 plt.ion()
@@ -24,21 +24,24 @@ ax.set_ylabel('Y (cm)')
 ax.set_zlabel('Z (cm)')
 ax.set_title('3D Kamera és Marker pozíció')
 
+# 3D marker pontok marker koordináta-rendszerben. Ezek a marker fizikai pontjai, és a ( , ,0) Z=0 azt jelenti, hogy a marker a síkban van
 marker_points = np.array([
-    [-MARKER_SIZE/2, MARKER_SIZE/2, 0],
-    [MARKER_SIZE/2, MARKER_SIZE/2, 0],
-    [MARKER_SIZE/2, -MARKER_SIZE/2, 0],
-    [-MARKER_SIZE/2, -MARKER_SIZE/2, 0]
+    [-MARKER_SIZE/2, MARKER_SIZE/2, 0],  #bal felső (-5, 5, 0)
+    [MARKER_SIZE/2, MARKER_SIZE/2, 0], #jobb felső (5, 5, 0)
+    [MARKER_SIZE/2, -MARKER_SIZE/2, 0], #jobb alsó (5, -5, 0)
+    [-MARKER_SIZE/2, -MARKER_SIZE/2, 0] #bal alsó (-5, -5, 0)
 ])
 
-camera_positions = []
+camera_positions = [] # Kamera trajektória
 cap = cv.VideoCapture(4)
 
 # OpenCV ablak létrehozása
 cv.namedWindow("ArUco Detekció", cv.WINDOW_NORMAL)
 
 def update_3d_plot(rvec, tvec):
-    ax.clear()
+    ax.clear() #3D vizualizáció frissítése
+
+    #Trajektória
     ax.scatter(marker_points[:,0], marker_points[:,1], marker_points[:,2], 
               c='blue', s=50, label='Marker')
     
@@ -52,11 +55,13 @@ def update_3d_plot(rvec, tvec):
         ax.plot(cam_pos_array[:,0], cam_pos_array[:,1], cam_pos_array[:,2], 
               'r-', alpha=0.3, label='Kamera útvonal')
     
+    #aktuális kamera pozíció
     ax.scatter(camera_position[0], camera_position[1], camera_position[2], 
              c='red', s=100, label='Kamera')
     ax.quiver(camera_position[0], camera_position[1], camera_position[2],
              R[2,0], R[2,1], R[2,2], length=5, color='green', label='Nézés iránya')
     
+    #tengelyek és címkék
     ax.set_xlabel('X (cm)')
     ax.set_ylabel('Y (cm)')
     ax.set_zlabel('Z (cm)')

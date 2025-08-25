@@ -8,6 +8,8 @@ marker_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
 # detect the marker
 param_markers = aruco.DetectorParameters()
 
+detector = aruco.ArucoDetector(marker_dict, param_markers)
+
 # utilizes default camera/webcam driver
 cap = cv.VideoCapture(4)
 
@@ -18,9 +20,7 @@ while True:
         break
     # turning the frame to grayscale-only (for efficiency)
     gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-    marker_corners, marker_IDs, reject = aruco.detectMarkers(
-        gray_frame, marker_dict, parameters=param_markers
-    )
+    marker_corners, marker_IDs, reject = detector.detectMarkers(gray_frame)
     # getting conrners of markers
     if marker_corners:
         for ids, corners in zip(marker_IDs, marker_corners):
