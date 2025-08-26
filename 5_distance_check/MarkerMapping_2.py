@@ -113,7 +113,7 @@ class MultiArUcoSLAM:
                 
                 # Marker bizalom frissítése, növelése, minden egyes észlelés esetén
                 if marker_id in self.marker_confidence:
-                    self.marker_confidence[marker_id] = min(1.0, 
+                    self.marker_confidence[marker_id] = max(1.0, 
                         self.marker_confidence[marker_id] + 0.1)
             
             return camera_position
@@ -190,6 +190,15 @@ class MultiArUcoSLAM:
                 ref_data = detected_markers[self.reference_marker_id]
                 R_cam_to_ref = cv.Rodrigues(ref_data['rvec'])[0]
                 camera_z_axis = R_cam_to_ref.T @ np.array([0, 0, 1])
+                self.ax.quiver(camera_position[0], camera_position[1], camera_position[2],
+                camera_z_axis[0], camera_z_axis[1], camera_z_axis[2],
+                length=8, color='green', label='Kamera nézés iránya')
+
+            if camera_position is not None and self.reference_marker_id not in detected_markers:
+                ref_data = detected_markers[marker_id]
+                data = detected_markers[marker_id]
+                R_cam_to_marker = cv.Rodrigues(data['rvec'])[0]
+                camera_z_axis = R_cam_to_marker.T @ np.array([0, 0, 1])
                 self.ax.quiver(camera_position[0], camera_position[1], camera_position[2],
                 camera_z_axis[0], camera_z_axis[1], camera_z_axis[2],
                 length=8, color='green', label='Kamera nézés iránya')
