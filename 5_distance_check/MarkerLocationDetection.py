@@ -145,22 +145,28 @@ class MultiArUcoSLAM:
             return None
 
         camera_positions = []
-        for marker_id in detected_markers:
-            if marker_id in self.marker_world_positions:
-                data = detected_markers[marker_id]
-                R_cam_to_marker = cv.Rodrigues(data['rvec'])[0]
-                t_cam_to_marker = data['tvec']
+        for marker_id, data in detected_markers.items():
+            if marker_id not in self.marker_world_positions:
+                continue
 
-                R_world_to_marker, t_world_to_marker = self.marker_world_positions[marker_id]
-
-                R_world_to_cam = R_cam_to_marker.T @ R_world_to_marker.T
-                t_world_to_cam = R_world_to_marker.T @ (-t_world_to_marker) - R_cam_to_marker.T @ t_cam_to_marker
-
-                camera_positions.append(t_world_to_cam.flatten())
+            rvec = data['rvec']
+            tvec = data['tvec'].reshape(3,1)
+            
+            R_m_c, _ = cv.Rodrigues(rvec)
+            
+            R_w_m, t_w_m = self.marker_world_positions[marker_id]
+            
+            t_w_m = np.asarray(t_w_m).reshape(3, 1)
+            
+            R_w_c = R_w_m @ R_m_c.T
+            
+            t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec
+            camera_positions.append(t_w_c.flatten())
+            
         if camera_positions:
-            return np.mean(camera_positions, axis=0)
+            cam_pos = np.mean(camera_positions, axis=0)
+            return cam_pos
         return None
-
     
     def bundle_adjustment(self):
         """Bundle adjustment - jelenleg nem csinál semmit"""
@@ -196,8 +202,8 @@ class MultiArUcoSLAM:
         
         # Kamera pozíció és trajektória
         if camera_position is not None:
-            camera_position[0] *= -1
-            camera_position[1] *= -1
+            #camera_position[0] *= -1
+            #camera_position[1] *= -1
             self.camera_positions.append(camera_position)
             
         if self.camera_positions:
@@ -218,6 +224,7 @@ class MultiArUcoSLAM:
                 first_marker_id = list(detected_markers.keys())[0]
                 data = detected_markers[first_marker_id]
                 R_cam_to_marker = cv.Rodrigues(data['rvec'])[0]
+                
                 camera_z_axis = R_cam_to_marker.T @ np.array([0, 0, 1])
                 self.ax.quiver(camera_position[0], camera_position[1], camera_position[2],
                               camera_z_axis[0], camera_z_axis[1], camera_z_axis[2],
