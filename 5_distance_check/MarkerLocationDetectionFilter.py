@@ -9,7 +9,7 @@ import os
 
 
 class KalmanFilter3D:
-    """3D Kálmán szűrő a kamera pozíció simításához"""
+    #3D Kálmán szűrő a kamera pozíció simításához
     
     def __init__(self, process_noise=0.01, measurement_noise=0.1):
         # Állapot: [x, y, z, vx, vy, vz]
@@ -45,18 +45,18 @@ class KalmanFilter3D:
         self.is_initialized = False
     
     def init(self, initial_position):
-        """Kálmán szűrő inicializálása kezdeti pozícióval"""
+        #Kálmán szűrő inicializálása kezdeti pozícióval
         initial_position = initial_position.astype(np.float32)
         for i in range(3):
             self.kf.statePost[i] = initial_position[i]
         self.is_initialized = True
     
     def predict(self):
-        """Előrejelzés"""
+        #Előrejelzés
         return self.kf.predict()
     
     def update(self, measurement):
-        """Frissítés méréssel"""
+        #Frissítés méréssel
         if not self.is_initialized:
             self.init(measurement)
             return measurement
@@ -69,7 +69,7 @@ class KalmanFilter3D:
         return corrected[:3].flatten()
     
     def get_current_state(self):
-        """Jelenlegi állapot lekérése"""
+        #Jelenlegi állapot lekérése
         return self.kf.statePost[:3].flatten()
 
 
@@ -116,7 +116,7 @@ class MultiArUcoSLAM:
         # Korábbi kamera pozíció outlier szűréshez
         self.last_valid_position = None
         self.position_history = []
-        self.max_position_change = 50.0  # Maximum megengedett pozíció változás (cm)
+        self.max_position_change = 100.0  # Maximum megengedett pozíció változás (cm)
         
         # Vizualizáció inicializálása
         plt.ion()
@@ -128,7 +128,7 @@ class MultiArUcoSLAM:
         self.fps = 0
     
     def create_predefined_map(self, filename="predefined_marker_map.json"):
-        """Előre definiált marker térkép létrehozása 2-es sorban növekvő sorrendben"""
+        #Előre definiált marker térkép létrehozása 2-es sorban növekvő sorrendben
         map_data = {
             'reference_marker_id': 0,
             'markers': {},
@@ -141,8 +141,8 @@ class MultiArUcoSLAM:
             col = i % 2
             
             # Pozíciók centiméterben
-            x = col * 30  # 0 vagy 30 cm
-            y = row * 30  # 0, 30, 60, ... cm
+            x = col * 60  # 0 vagy 30 cm
+            y = row * 60  # 0, 30, 60, ... cm
             z = 0         # mind a földön
             
             # Orientáció (síkban fekszenek, normál felfelé mutat)
@@ -162,7 +162,7 @@ class MultiArUcoSLAM:
         return map_data
     
     def load_predefined_map(self, filename="predefined_marker_map.json"):
-        """Előre definiált marker térkép betöltése"""
+        #Előre definiált marker térkép betöltése
         # Ha a fájl nem létezik, létrehozzuk
         if not os.path.exists(filename):
             print("Előre definiált marker térkép nem található, létrehozás...")
@@ -193,7 +193,7 @@ class MultiArUcoSLAM:
             self.load_predefined_map(filename)
     
     def detect_and_estimate_poses(self, frame):
-        """Markerek észlelése és pózok becslése"""
+        #Markerek észlelése és pózok becslése
         gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
         marker_corners, marker_IDs, _ = self.detector.detectMarkers(gray_frame)
         
@@ -229,7 +229,7 @@ class MultiArUcoSLAM:
         return detected_markers
     
     def is_position_valid(self, new_position, detected_markers):
-        """Ellenőrzi, hogy az új pozíció valid-e (outlier szűrés)"""
+        #Ellenőrzi, hogy az új pozíció valid-e (outlier szűrés)
         if self.last_valid_position is None:
             return True
         
@@ -250,12 +250,14 @@ class MultiArUcoSLAM:
         return True
     
     def update_marker_map(self, detected_markers):
-        """Marker térkép frissítése – súlyozott átlag a marker konfidenciák alapján"""
+        #Marker térkép frissítése – súlyozott átlag a marker konfidenciák alapján
         if not detected_markers:
             return None
 
         camera_positions = []
         weights = []
+        
+       
         
         for marker_id, data in detected_markers.items():
             if marker_id not in self.marker_world_positions:
@@ -280,7 +282,9 @@ class MultiArUcoSLAM:
             
             # Közelebbi markerek nagyobb súllyal
             distance = np.linalg.norm(tvec)
-            distance_weight = 1.0 / max(1.0, distance / 10.0)  # Normalizálás
+            distance_weight = 1.0 / max(1.0, (distance*1.5 / 10.0)**2)  # Normalizálás
+
+            print("Distance:", distance)
             
             final_weight = weight * distance_weight
             weights.append(final_weight)
@@ -309,7 +313,7 @@ class MultiArUcoSLAM:
         return self.last_valid_position
     
     def smooth_camera_position(self, raw_position):
-        """Kamera pozíció simítása Kálmán szűrővel"""
+        #Kamera pozíció simítása Kálmán szűrővel
         if raw_position is None:
             # Ha nincs mérés, csak előrejelzést végzünk
             if self.kalman_filter.is_initialized:
@@ -328,11 +332,11 @@ class MultiArUcoSLAM:
         return smoothed_position
     
     def bundle_adjustment(self):
-        """Bundle adjustment - jelenleg nem csinál semmit"""
+        #Bundle adjustment - jelenleg nem csinál semmit
         pass
     
     def calculate_fps(self):
-        """FPS számolása"""
+        #FPS számolása
         current_time = cv.getTickCount()
         time_diff = (current_time - self.prev_time) / cv.getTickFrequency()
         self.prev_time = current_time
@@ -345,7 +349,7 @@ class MultiArUcoSLAM:
         return self.fps
     
     def update_visualization(self, camera_position=None, filtered_position=None, detected_markers=None):
-        """3D vizualizáció frissítése"""
+        #3D vizualizáció frissítése
         self.ax.clear()
         
         # Markerek megjelenítése
@@ -444,7 +448,7 @@ class MultiArUcoSLAM:
         plt.pause(0.01)
     
     def save_map(self, filename="aruco_map.json"):
-        """Marker térkép mentése"""
+        #Marker térkép mentése
         map_data = {
             'reference_marker_id': int(self.reference_marker_id) if self.reference_marker_id else None,
             'markers': {},
@@ -464,7 +468,7 @@ class MultiArUcoSLAM:
         print(f"Marker térkép elmentve: {filename}")
     
     def load_map(self, filename="aruco_map.json"):
-        """Marker térkép betöltése"""
+        #Marker térkép betöltése
         try:
             with open(filename, 'r') as f:
                 map_data = json.load(f)
