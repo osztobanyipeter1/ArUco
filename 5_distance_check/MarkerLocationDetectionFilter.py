@@ -75,7 +75,7 @@ class KalmanFilter3D:
 
 class MultiArUcoSLAM:
 
-    def __init__(self, calib_data_path, marker_size=10):
+    def __init__(self, calib_data_path, marker_size=10.5):
         # Kalibrációs adatok betöltése
         calib_data = np.load(calib_data_path)
         self.cam_mat = calib_data["camMatrix"]
@@ -173,7 +173,7 @@ class MultiArUcoSLAM:
                 map_data = json.load(f)
             
             self.reference_marker_id = map_data.get('reference_marker_id')
-            self.MARKER_SIZE = map_data.get('marker_size', 10)
+            self.MARKER_SIZE = map_data.get('marker_size', 10.5)
             
             # Marker pozíciók betöltése
             for marker_id_str, data in map_data['markers'].items():
@@ -494,7 +494,7 @@ class MultiArUcoSLAM:
 
 def main():
     # SLAM rendszer inicializálása
-    slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10)
+    slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
     
     # Kamera
     cap = cv.VideoCapture(4)
