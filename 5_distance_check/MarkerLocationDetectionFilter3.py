@@ -7,66 +7,6 @@ import json
 import os
 
 
-class KalmanFilter3D:
-    #3D Kálmán szűrő a kamera pozíció simításához
-    
-    def __init__(self, process_noise=0.01, measurement_noise=0.1):
-        # Állapot: [x, y, z, vx, vy, vz]
-        self.state_dim = 6
-        self.measurement_dim = 3
-        
-        # Kálmán szűrő inicializálása
-        self.kf = cv.KalmanFilter(self.state_dim, self.measurement_dim)
-        
-        # Átmeneti mátrix (F) - állapot átmenet
-        self.kf.transitionMatrix = np.eye(self.state_dim, dtype=np.float32)
-        dt = 1.0  # időlépés
-        for i in range(3):
-            self.kf.transitionMatrix[i, i+3] = dt
-        
-        # Mérési mátrix (H) - csak pozíciót mérünk
-        self.kf.measurementMatrix = np.zeros((self.measurement_dim, self.state_dim), dtype=np.float32)
-        for i in range(3):
-            self.kf.measurementMatrix[i, i] = 1
-        
-        # Process zaj kovariancia (Q)
-        self.kf.processNoiseCov = np.eye(self.state_dim, dtype=np.float32) * process_noise
-        
-        # Mérési zaj kovariancia (R)
-        self.kf.measurementNoiseCov = np.eye(self.measurement_dim, dtype=np.float32) * measurement_noise
-        
-        # Állapot kovariancia (P)
-        self.kf.errorCovPost = np.eye(self.state_dim, dtype=np.float32)
-        
-        # Kezdeti állapot
-        self.kf.statePost = np.zeros((self.state_dim, 1), dtype=np.float32)
-        
-        self.is_initialized = False
-    
-    def init(self, initial_position):
-        #Kálmán szűrő inicializálása kezdeti pozícióval
-        initial_position = initial_position.astype(np.float32)
-        for i in range(3):
-            self.kf.statePost[i] = initial_position[i]
-        self.is_initialized = True
-    
-    def predict(self):
-        #Előrejelzés
-        return self.kf.predict()
-    
-    def update(self, measurement):
-        #Frissítés méréssel
-        if not self.is_initialized:
-            self.init(measurement)
-            return measurement
-        
-        predicted = self.predict()
-        measurement_float32 = measurement.astype(np.float32).reshape(-1, 1)
-        corrected = self.kf.correct(measurement_float32)
-        
-        return corrected[:3].flatten()
-
-
 class MultiArUcoSLAM:
 
     def __init__(self, calib_data_path, marker_size=10.5):
@@ -87,13 +27,6 @@ class MultiArUcoSLAM:
         
         # Kamera trajektória
         self.camera_positions = []
-        self.filtered_camera_positions = []
-        
-        # Kálmán szűrő a kamera pozíció simításához
-        self.kalman_filter = KalmanFilter3D(process_noise=0.1, measurement_noise=1.0)
-        
-        # Referencia marker ID
-        self.reference_marker_id = None
         
         # 3D marker pontok marker koordináta-rendszerben
         self.marker_points = np.array([
@@ -106,10 +39,6 @@ class MultiArUcoSLAM:
         # Előre definiált marker térkép betöltése
         self.load_predefined_map("predefined_marker_map.json")
         
-        # Korábbi kamera pozíció outlier szűréshez
-        self.last_valid_position = None
-        self.max_position_change = 100.0  # Maximum megengedett pozíció változás (cm)
-        
         # Vizualizáció inicializálása
         plt.ion()
         self.fig = plt.figure(figsize=(12, 10))
@@ -120,30 +49,29 @@ class MultiArUcoSLAM:
         self.fps = 0
     
     def create_predefined_map(self, filename="predefined_marker_map.json"):
-        #Előre definiált marker térkép létrehozása 2-es sorban növekvő sorrendben
+        #Előre definiált marker térkép létrehozása
         map_data = {
             'reference_marker_id': 0,
             'markers': {},
             'marker_size': self.MARKER_SIZE
         }
         
-        # Markerek elhelyezése 2-es sorban növekvő sorrendben, 30 cm távolsággal
+        # Markerek elhelyezése 2-es sorban növekvő sorrendben, 60 cm távolsággal
         for i in range(20):
             row = i // 2
             col = i % 2
             
             # Pozíciók centiméterben
-            x = col * 60  # 0 vagy 30 cm
-            y = row * 60  # 0, 30, 60, ... cm
-            z = 0         # mind a földön
+            x = col * 60
+            y = row * 60
+            z = 0
             
-            # Orientáció (síkban fekszenek, normál felfelé mutat)
-            R = np.eye(3)  # identitás mátrix - nincs forgatás
+            # Orientáció
+            R = np.eye(3)
             
             map_data['markers'][str(i)] = {
                 'rotation_matrix': R.tolist(),
-                'translation_vector': [[x], [y], [z]],
-                'confidence': 1.0
+                'translation_vector': [[x], [y], [z]]
             }
         
         # Fájl mentése
@@ -163,7 +91,6 @@ class MultiArUcoSLAM:
             with open(filename, 'r') as f:
                 map_data = json.load(f)
             
-            self.reference_marker_id = map_data.get('reference_marker_id')
             self.MARKER_SIZE = map_data.get('marker_size', 10.5)
             
             # Marker pozíciók betöltése
@@ -197,53 +124,20 @@ class MultiArUcoSLAM:
                 )
                 
                 if ret:
-                    # Számoljuk a re-projection errort a bizalom számolásához
-                    projected_points, _ = cv.projectPoints(
-                        self.marker_points, rvec, tvec, 
-                        self.cam_mat, self.dist_coef
-                    )
-                    reprojection_error = np.mean(np.linalg.norm(corners - projected_points.reshape(-1, 2), axis=1))
-                    
-                    # Bizalom számolása (kisebb error = nagyobb bizalom)
-                    confidence = max(0.1, 1.0 - reprojection_error / 10.0)
-                    
                     detected_markers[marker_id] = {
                         'rvec': rvec,
                         'tvec': tvec,
-                        'corners': corners,
-                        'confidence': confidence,
-                        'reprojection_error': reprojection_error
+                        'corners': corners
                     }
         
         return detected_markers
     
-    def is_position_valid(self, new_position, detected_markers):
-        #Ellenőrzi, hogy az új pozíció valid-e (outlier szűrés)
-        if self.last_valid_position is None:
-            return True
-        
-        # Pozíció változás mértéke
-        position_change = np.linalg.norm(new_position - self.last_valid_position)
-        
-        # Ha túl nagy a változás, valószínűleg outlier
-        if position_change > self.max_position_change:
-            print(f"Outlier detected! Position change: {position_change:.1f}cm > {self.max_position_change}cm")
-            return False
-        
-        # Kevesebb marker esetén szigorúbb limit
-        if len(detected_markers) < 2:
-            print(f"Warning: Only {len(detected_markers)} markers detected")
-            return position_change < (self.max_position_change / 2)
-        
-        return True
-    
-    def update_marker_map(self, detected_markers):
-        #Marker térkép frissítése – súlyozott átlag a marker konfidenciák alapján
+    def calculate_camera_position(self, detected_markers):
+        #Kamera pozíció számítása az előre definiált térkép alapján
         if not detected_markers:
             return None
 
         camera_positions = []
-        weights = []
         
         for marker_id, data in detected_markers.items():
             if marker_id not in self.marker_world_positions:
@@ -261,52 +155,13 @@ class MultiArUcoSLAM:
             
             camera_positions.append(t_w_c.flatten())
             
-            # Súly számolása a marker konfidencia és re-projection error alapján
-            detection_confidence = data.get('confidence', 0.5)
-            weight = detection_confidence
-            
-            # Közelebbi markerek nagyobb súllyal
-            distance = np.linalg.norm(tvec)
-            distance_weight = 1.0 / max(1.0, (distance*1.5 / 10.0)**2)
-
-            print("Distance:", distance)
-            
-            final_weight = weight * distance_weight
-            weights.append(final_weight)
-            
         if not camera_positions:
             return None
-            
-        # Normalizáljuk a súlyokat
-        weights = np.array(weights)
-        if np.sum(weights) > 0:
-            weights = weights / np.sum(weights)
-        else:
-            weights = np.ones(len(weights)) / len(weights)
         
-        # Súlyozott átlag
-        cam_pos = np.zeros(3)
-        for i, pos in enumerate(camera_positions):
-            cam_pos += pos * weights[i]
+        # Egyszerű átlag
+        cam_pos = np.mean(camera_positions, axis=0)
         
-        # Outlier szűrés
-        if not self.is_position_valid(cam_pos, detected_markers):
-            print("Invalid position rejected, using last valid position")
-            return self.last_valid_position
-        
-        self.last_valid_position = cam_pos.astype(np.float32)
-        return self.last_valid_position
-    
-    def smooth_camera_position(self, raw_position):
-        #Kamera pozíció simítása Kálmán szűrővel
-        if raw_position is None:
-            if self.kalman_filter.is_initialized:
-                predicted = self.kalman_filter.predict()
-                return predicted[:3].flatten()
-            return None
-        
-        smoothed_position = self.kalman_filter.update(raw_position)
-        return smoothed_position
+        return cam_pos
     
     def calculate_fps(self):
         #FPS számolása
@@ -321,7 +176,7 @@ class MultiArUcoSLAM:
         
         return self.fps
     
-    def update_visualization(self, camera_position=None, filtered_position=None, detected_markers=None):
+    def update_visualization(self, camera_position=None, detected_markers=None):
         #3D vizualizáció frissítése
         self.ax.clear()
         
@@ -341,40 +196,28 @@ class MultiArUcoSLAM:
             corners_plot = np.vstack([world_corners, world_corners[0]])
             self.ax.plot(corners_plot[:,0], corners_plot[:,1], corners_plot[:,2], 
                         c=colors[i], linewidth=2)
-            
-            # Marker normálvektor megjelenítése
-            normal = R @ np.array([0, 0, 1])
-            center = t.flatten()
-            self.ax.quiver(center[0], center[1], center[2],
-                          normal[0], normal[1], normal[2],
-                          length=5, color=colors[i], alpha=0.7)
         
         # Kamera pozíció és trajektória
-        if filtered_position is not None:
-            self.filtered_camera_positions.append(filtered_position)
+        if camera_position is not None:
+            self.camera_positions.append(camera_position)
             
-        if self.filtered_camera_positions:
-            filtered_cam_array = np.array(self.filtered_camera_positions)
+        if self.camera_positions:
+            cam_array = np.array(self.camera_positions)
             
-            # Szűrt trajektória
-            if len(self.filtered_camera_positions) > 1:
-                self.ax.plot(filtered_cam_array[:,0], filtered_cam_array[:,1], filtered_cam_array[:,2], 
-                           'r-', alpha=0.8, linewidth=3, label='Szűrt kamera trajektória')
+            # Trajektória
+            if len(self.camera_positions) > 1:
+                self.ax.plot(cam_array[:,0], cam_array[:,1], cam_array[:,2], 
+                           'r-', alpha=0.8, linewidth=3, label='Kamera trajektória')
             
-            # Aktuális szűrt kamera pozíció
-            self.ax.scatter(filtered_cam_array[-1,0], filtered_cam_array[-1,1], filtered_cam_array[-1,2], 
-                           c='red', s=200, marker='o', label='Szűrt kamera')
-            
-            # Aktuális nyers kamera pozíció
-            if camera_position is not None:
-                self.ax.scatter(camera_position[0], camera_position[1], camera_position[2], 
-                               c='blue', s=100, marker='x', label='Nyers kamera', alpha=0.5)
+            # Aktuális kamera pozíció
+            self.ax.scatter(cam_array[-1,0], cam_array[-1,1], cam_array[-1,2], 
+                           c='red', s=200, marker='o', label='Kamera')
         
         # Tengelyek és címkék
         self.ax.set_xlabel('X (cm)')
         self.ax.set_ylabel('Y (cm)')
         self.ax.set_zlabel('Z (cm)')
-        self.ax.set_title(f'Multi-ArUco SLAM - {len(self.marker_world_positions)} marker betöltve\nFPS: {self.fps:.1f}')
+        self.ax.set_title(f'Multi-ArUco SLAM - {len(self.marker_world_positions)} marker\nFPS: {self.fps:.1f}')
         
         self.ax.legend()
         
@@ -382,8 +225,8 @@ class MultiArUcoSLAM:
         all_positions = []
         for _, (_, t) in self.marker_world_positions.items():
             all_positions.append(t.flatten())
-        if self.filtered_camera_positions:
-            all_positions.extend(self.filtered_camera_positions)
+        if self.camera_positions:
+            all_positions.extend(self.camera_positions)
         
         if all_positions:
             all_positions = np.array(all_positions)
@@ -421,17 +264,11 @@ def main():
             # Markerek észlelése
             detected_markers = slam.detect_and_estimate_poses(frame)
             
-            # Kamera pozíció számítása az előre definiált térkép alapján
-            raw_camera_position = slam.update_marker_map(detected_markers)
-            
-            # Kálmán szűrő alkalmazása a kamera pozíció simításához
-            filtered_camera_position = None
-            if raw_camera_position is not None:
-                slam.camera_positions.append(raw_camera_position)
-                filtered_camera_position = slam.smooth_camera_position(raw_camera_position)
+            # Kamera pozíció számítása
+            camera_position = slam.calculate_camera_position(detected_markers)
             
             # Vizualizáció frissítése
-            slam.update_visualization(raw_camera_position, filtered_camera_position, detected_markers)
+            slam.update_visualization(camera_position, detected_markers)
             
             # Markerek rajzolása az eredeti képre
             for marker_id, data in detected_markers.items():
@@ -446,10 +283,8 @@ def main():
                 
                 # Marker ID és távolság
                 distance = np.linalg.norm(data['tvec'])
-                confidence = data.get('confidence', 0)
-                error = data.get('reprojection_error', 0)
                 
-                text = f"ID: {marker_id} | Dist: {distance:.1f}cm | Conf: {confidence:.2f} | Err: {error:.2f}"
+                text = f"ID: {marker_id} | Dist: {distance:.1f}cm"
                 cv.putText(frame, text, tuple(corners[0]), 
                           cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
@@ -460,8 +295,8 @@ def main():
                 f"Észlelt markerek: {list(detected_markers.keys()) if detected_markers else 'Nincs'}",
             ]
             
-            if filtered_camera_position is not None:
-                status_text.append(f"Szűrt pozíció: [{filtered_camera_position[0]:.1f}, {filtered_camera_position[1]:.1f}, {filtered_camera_position[2]:.1f}]")
+            if camera_position is not None:
+                status_text.append(f"Pozíció: [{camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f}]")
             
             for i, text in enumerate(status_text):
                 cv.putText(frame, text, (10, 30 + i * 25), 
