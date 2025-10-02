@@ -6,6 +6,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import json
 import os
 
+#SIMA MINDENMENTES
 
 class MultiArUcoSLAM:
 

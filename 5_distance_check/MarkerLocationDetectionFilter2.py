@@ -7,6 +7,8 @@ import json
 import os
 
 
+#KÁLMÁN SZŰRŐS
+
 class KalmanFilter3D:
     #3D Kálmán szűrő a kamera pozíció simításához
     

@@ -8,6 +8,8 @@ import json
 import os
 
 
+#KORLÁTOZOTT 100 CENTIS POZÍCIÓVÁLTÁS, SZŰRŐ, SIMÍTÁS, DE NEM JÓ.
+
 class KalmanFilter3D:
     #3D Kálmán szűrő a kamera pozíció simításához
     
@@ -136,7 +138,7 @@ class MultiArUcoSLAM:
         }
         
         # Markerek elhelyezése 2-es sorban növekvő sorrendben, 30 cm távolsággal
-        for i in range(20):
+        for i in range(2):
             row = i // 2
             col = i % 2
             
@@ -447,51 +449,6 @@ class MultiArUcoSLAM:
         plt.draw()
         plt.pause(0.01)
     
-    def save_map(self, filename="aruco_map.json"):
-        #Marker térkép mentése
-        map_data = {
-            'reference_marker_id': int(self.reference_marker_id) if self.reference_marker_id else None,
-            'markers': {},
-            'marker_size': self.MARKER_SIZE
-        }
-        
-        for marker_id, (R, t) in self.marker_world_positions.items():
-            map_data['markers'][str(marker_id)] = {
-                'rotation_matrix': R.tolist(),
-                'translation_vector': t.tolist(),
-                'confidence': self.marker_confidence[marker_id]
-            }
-        
-        with open(filename, 'w') as f:
-            json.dump(map_data, f, indent=2)
-        
-        print(f"Marker térkép elmentve: {filename}")
-    
-    def load_map(self, filename="aruco_map.json"):
-        #Marker térkép betöltése
-        try:
-            with open(filename, 'r') as f:
-                map_data = json.load(f)
-            
-            self.reference_marker_id = map_data.get('reference_marker_id')
-            self.MARKER_SIZE = map_data.get('marker_size', 10)
-            
-            for marker_id_str, data in map_data['markers'].items():
-                marker_id = int(marker_id_str)
-                R = np.array(data['rotation_matrix'])
-                t = np.array(data['translation_vector'])
-                self.marker_world_positions[marker_id] = (R, t)
-                self.marker_confidence[marker_id] = data['confidence']
-            
-            print(f"Marker térkép betöltve: {filename}")
-            print(f"Betöltött markerek: {list(self.marker_world_positions.keys())}")
-            
-        except FileNotFoundError:
-            print(f"Marker térkép fájl nem található: {filename}")
-        except Exception as e:
-            print(f"Hiba a marker térkép betöltésekor: {e}")
-
-
 def main():
     # SLAM rendszer inicializálása
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
@@ -574,30 +531,6 @@ def main():
             if frame_count % 100 == 0:
                 slam.bundle_adjustment()
             
-            # Kilépés és egyéb parancsok
-            key = cv.waitKey(1)
-            if key == ord('q'):
-                break
-            elif key == ord('s'):
-                slam.save_map("aruco_map.json")
-                print("Térkép mentve!")
-            elif key == ord('l'):
-                slam.load_map("aruco_map.json")
-                print("Térkép betöltve!")
-            elif key == ord('c'):
-                slam.camera_positions.clear()
-                slam.filtered_camera_positions.clear()
-                slam.last_valid_position = None
-                slam.kalman_filter = KalmanFilter3D(process_noise=0.1, measurement_noise=1.0)
-                print("Kamera trajektória törölve és Kálmán szűrő resetelve!")
-            elif key == ord('r'):
-                # Újra betöltjük az előre definiált térképet
-                slam.load_predefined_map("predefined_marker_map.json")
-                slam.camera_positions.clear()
-                slam.filtered_camera_positions.clear()
-                slam.last_valid_position = None
-                slam.kalman_filter = KalmanFilter3D(process_noise=0.1, measurement_noise=1.0)
-                print("Előre definiált térkép újratöltve!")
     
     except Exception as e:
         print(f"Hiba történt: {e}")
@@ -608,11 +541,6 @@ def main():
         cap.release()
         cv.destroyAllWindows()
         plt.ioff()
-        
-        # Automatikus mentés kilépéskor
-        if slam.marker_world_positions:
-            slam.save_map("aruco_map_final.json")
-            print("Végleges térkép automatikusan mentve!")
         
         plt.close()
 

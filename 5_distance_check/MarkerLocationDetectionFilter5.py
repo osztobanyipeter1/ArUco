@@ -6,6 +6,8 @@ from mpl_toolkits.mplot3d import Axes3D
 import json
 import os
 
+#EBBEN VANNAK A KÜLÖNBÖZŐ SZÁMÍTÁSI JAVÍTÁSI FORMÁK, AMIK A CHATGPT SZERINT SZÓBA JÖHETNEK
+
 
 class MultiArUcoSLAM:
 
@@ -111,6 +113,33 @@ class MultiArUcoSLAM:
             print(f"Hiba a marker térkép betöltésekor: {e}")
             map_data = self.create_predefined_map(filename)
             self.load_predefined_map(filename)
+
+    def calibrate_marker_map(self, measured_positions):
+        """
+        Térkép kalibrálása mért pozíciók alapján
+        measured_positions: {marker_id: (x, y, z)} valódi pozíciók cm-ben
+        """
+        for marker_id, real_pos in measured_positions.items():
+            if marker_id in self.marker_world_positions:
+                # Frissítsük a marker pozícióját
+                t_new = np.array([[real_pos[0]], [real_pos[1]], [real_pos[2]]], dtype=np.float32)
+                R = np.eye(3)  # Orientáció marad
+                self.marker_world_positions[marker_id] = (R, t_new)
+                print(f"Marker {marker_id} pozíció frissítve: ({real_pos[0]}, {real_pos[1]}, {real_pos[2]})")
+    
+    def calculate_single_marker_position(self, marker_id, data):
+        """Egy marker alapján kamera pozíció számítása"""
+        rvec = data['rvec']
+        tvec = data['tvec'].reshape(3,1)
+        
+        R_m_c, _ = cv.Rodrigues(rvec)
+        R_w_m, t_w_m = self.marker_world_positions[marker_id]
+        t_w_m = np.asarray(t_w_m).reshape(3, 1)
+        
+        R_w_c = R_w_m @ R_m_c.T
+        t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec
+        
+        return t_w_c.flatten()
     
     def detect_and_estimate_poses(self, frame):
         #Markerek észlelése és pózok becslése
@@ -155,8 +184,107 @@ class MultiArUcoSLAM:
         distance_weight = 1.0 / max(1.0, (distance * self.distance_weight_factor / self.distance_normalization)**2)
         return distance_weight
     
-    def calculate_camera_position(self, detected_markers):
-        #Kamera pozíció számítása súlyozott átlaggal
+    def calculate_camera_position_ransac(self, detected_markers, max_iterations=50, inlier_threshold=5.0):
+        """RANSAC algoritmus a kiugró értékek kiszűrésére"""
+        if not detected_markers or len(detected_markers) < 2:
+            return self.calculate_camera_position_basic(detected_markers)
+
+        positions = []
+        for marker_id, data in detected_markers.items():
+            if marker_id in self.marker_world_positions:
+                pos = self.calculate_single_marker_position(marker_id, data)
+                positions.append((marker_id, pos))
+
+        best_inliers = []
+        best_consensus_pos = None
+
+        for _ in range(max_iterations):
+            # Véletlenszerűen válasszunk 2 mintát
+            sample = np.random.choice(len(positions), 2, replace=False)
+            sample_positions = [positions[i][1] for i in sample]
+            
+            # Középpont számítása
+            consensus_pos = np.mean(sample_positions, axis=0)
+            
+            # Inlierek keresése
+            inliers = []
+            for marker_id, pos in positions:
+                distance = np.linalg.norm(pos - consensus_pos)
+                if distance < inlier_threshold:  # 5 cm határ
+                    inliers.append((marker_id, pos))
+            
+            if len(inliers) > len(best_inliers):
+                best_inliers = inliers
+                best_consensus_pos = consensus_pos
+
+        # Ha találtunk elég inliert, használjuk őket
+        if len(best_inliers) >= 2:
+            print(f"RANSAC: {len(best_inliers)} inlier / {len(positions)} marker")
+            inlier_positions = [pos for _, pos in best_inliers]
+            return np.mean(inlier_positions, axis=0)
+        else:
+            # Visszaesés a régi módszerre
+            return self.calculate_camera_position_basic(detected_markers)
+
+    def calculate_camera_position_improved(self, detected_markers):
+        """Javított súlyozás a konzisztencia alapján"""
+        if not detected_markers:
+            return None
+
+        # Először számoljuk ki az egyedi pozíciókat
+        individual_data = []
+        for marker_id, data in detected_markers.items():
+            if marker_id in self.marker_world_positions:
+                pos = self.calculate_single_marker_position(marker_id, data)
+                individual_data.append({
+                    'id': marker_id,
+                    'position': pos,
+                    'distance': data['distance'],
+                    'confidence': data.get('confidence', 0.5),
+                    'error': data.get('reprojection_error', 0)
+                })
+
+        if len(individual_data) < 2:
+            return individual_data[0]['position'] if individual_data else None
+
+        # Középpont számítása konzisztencia alapú súlyozással
+        all_positions = np.array([d['position'] for d in individual_data])
+        centroid = np.mean(all_positions, axis=0)
+        
+        # Konzisztencia súly: mennyire illeszkedik a többi markerhez
+        consistency_weights = []
+        for data in individual_data:
+            # Alap súly (távolság + konfidencia)
+            base_weight = self.calculate_distance_weight(data['distance']) * data['confidence']
+            
+            # Konzisztencia súly: közelebb van-e a középponthoz
+            distance_to_centroid = np.linalg.norm(data['position'] - centroid)
+            consistency_weight = 1.0 / (1.0 + distance_to_centroid / 10.0)  # 10 cm normalizálás
+            
+            # Végső súly
+            final_weight = base_weight * consistency_weight
+            consistency_weights.append(final_weight)
+
+        # Súlyozott átlag
+        weights = np.array(consistency_weights)
+        if np.sum(weights) > 0:
+            weights = weights / np.sum(weights)
+        
+        final_pos = np.zeros(3)
+        for i, data in enumerate(individual_data):
+            final_pos += data['position'] * weights[i]
+
+        # Kiírás a konzisztencia súlyokkal
+        print("\nJAVÍTOTT SÚLYOZÁS:")
+        for i, data in enumerate(individual_data):
+            dist_to_centroid = np.linalg.norm(data['position'] - centroid)
+            print(f"Marker {data['id']}: base_w={self.calculate_distance_weight(data['distance']) * data['confidence']:.3f}, "
+                f"consistency_w={1.0/(1.0 + dist_to_centroid/10.0):.3f}, final_w={weights[i]:.3f}")
+
+        return final_pos
+    
+    def calculate_camera_position_basic(self, detected_markers):
+        """Alap súlyozás - részletes kiírással"""
         if not detected_markers:
             return None
 
@@ -172,17 +300,7 @@ class MultiArUcoSLAM:
             if marker_id not in self.marker_world_positions:
                 continue
 
-            rvec = data['rvec']
-            tvec = data['tvec'].reshape(3,1)
-            
-            R_m_c, _ = cv.Rodrigues(rvec)
-            R_w_m, t_w_m = self.marker_world_positions[marker_id]
-            t_w_m = np.asarray(t_w_m).reshape(3, 1)
-            
-            R_w_c = R_w_m @ R_m_c.T
-            t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec
-            
-            individual_position = t_w_c.flatten()
+            individual_position = self.calculate_single_marker_position(marker_id, data)
             camera_positions.append(individual_position)
             individual_positions.append((marker_id, individual_position))
             
@@ -235,6 +353,44 @@ class MultiArUcoSLAM:
         print("="*60)
         
         return cam_pos
+
+    def calculate_camera_position_robust(self, detected_markers):
+        """Robusztus pozíció számítás minden módszerrel"""
+        if not detected_markers:
+            return None
+
+        # 1. RANSAC próbálkozás
+        ransac_result = self.calculate_camera_position_ransac(detected_markers)
+        
+        # 2. Javított súlyozás
+        improved_result = self.calculate_camera_position_improved(detected_markers)
+        
+        # 3. Egyszerű súlyozás (biztonsági mentés)
+        simple_result = self.calculate_camera_position_basic(detected_markers)
+        
+        # Eredmények összehasonlítása
+        positions = [ransac_result, improved_result, simple_result]
+        valid_positions = [p for p in positions if p is not None]
+        
+        if not valid_positions:
+            return None
+        
+        # Válasszuk a legstabilabbat (középső érték)
+        if len(valid_positions) >= 3:
+            # Medián a három tengelyen külön-külön
+            final_pos = np.median(valid_positions, axis=0)
+            print(f"ROBUST: RANSAC + Improved + Simple → Medián")
+        else:
+            final_pos = valid_positions[0]
+        
+        return final_pos
+
+    def calculate_camera_position(self, detected_markers):
+        """Fő pozíció számítási metódus - választható melyik algoritmust használja"""
+        return self.calculate_camera_position_robust(detected_markers)
+        #return self.calculate_camera_position_basic(detected_markers)
+        #return self.calculate_camera_position_ransac(detected_markers)
+        #return self.calculate_camera_position_improved(detected_markers)
         
     def calculate_fps(self):
         #FPS számolása
@@ -333,6 +489,15 @@ def main():
     # SLAM rendszer inicializálása
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
     
+    # Opcionális: térkép kalibrálása valódi pozíciókkal
+    # measured_positions = {
+    #     0: (0, 0, 0),
+    #     1: (60, 0, 0), 
+    #     2: (0, 60, 0),
+    #     # ... add meg a valódi pozíciókat
+    # }
+    # slam.calibrate_marker_map(measured_positions)
+    
     # Kamera
     cap = cv.VideoCapture(4)
     if not cap.isOpened():
@@ -354,7 +519,7 @@ def main():
             # Markerek észlelése
             detected_markers = slam.detect_and_estimate_poses(frame)
             
-            # Kamera pozíció számítása súlyozott átlaggal
+            # Kamera pozíció számítása
             camera_position = slam.calculate_camera_position(detected_markers)
             
             # Vizualizáció frissítése

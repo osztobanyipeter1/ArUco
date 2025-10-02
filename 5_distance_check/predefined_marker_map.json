@@ -29,7 +29,8 @@
         [
           0
         ]
-      ]
+      ],
+      "confidence": 1.0
     },
     "1": {
       "rotation_matrix": [
@@ -59,7 +60,8 @@
         [
           0
         ]
-      ]
+      ],
+      "confidence": 1.0
     }
   },
   "marker_size": 10.5
