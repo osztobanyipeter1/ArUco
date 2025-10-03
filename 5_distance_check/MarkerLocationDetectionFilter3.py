@@ -63,8 +63,8 @@ class MultiArUcoSLAM:
             col = i % 2
             
             # Pozíciók centiméterben
-            x = col * 60
-            y = row * 60
+            x = col * 30
+            y = row * 30
             z = 0
             
             # Orientáció

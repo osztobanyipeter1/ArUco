@@ -63,13 +63,13 @@ class MultiArUcoSLAM:
         }
         
         # Markerek elhelyezése 2-es sorban növekvő sorrendben, 60 cm távolsággal
-        for i in range(20):
+        for i in range(2):
             row = i // 2
             col = i % 2
             
             # Pozíciók centiméterben
-            x = col * 60
-            y = row * 60
+            x = col * 30
+            y = row * 30
             z = 0
             
             # Orientáció
@@ -386,7 +386,6 @@ class MultiArUcoSLAM:
         return final_pos
 
     def calculate_camera_position(self, detected_markers):
-        """Fő pozíció számítási metódus - választható melyik algoritmust használja"""
         return self.calculate_camera_position_robust(detected_markers)
         #return self.calculate_camera_position_basic(detected_markers)
         #return self.calculate_camera_position_ransac(detected_markers)
@@ -488,16 +487,7 @@ class MultiArUcoSLAM:
 def main():
     # SLAM rendszer inicializálása
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
-    
-    # Opcionális: térkép kalibrálása valódi pozíciókkal
-    # measured_positions = {
-    #     0: (0, 0, 0),
-    #     1: (60, 0, 0), 
-    #     2: (0, 60, 0),
-    #     # ... add meg a valódi pozíciókat
-    # }
-    # slam.calibrate_marker_map(measured_positions)
-    
+        
     # Kamera
     cap = cv.VideoCapture(4)
     if not cap.isOpened():

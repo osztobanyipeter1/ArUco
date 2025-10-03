@@ -10,7 +10,7 @@ import os
 
 class MultiArUcoSLAM:
 
-    def __init__(self, calib_data_path, marker_size=10):
+    def __init__(self, calib_data_path, marker_size=10.5):
         # Kalibrációs adatok betöltése
         calib_data = np.load(calib_data_path)
         self.cam_mat = calib_data["camMatrix"]
@@ -64,8 +64,8 @@ class MultiArUcoSLAM:
             col = i % 2
             
             # Pozíciók méterben (100 cm = 1 méter)
-            x = col * 60  # 0 vagy 100 cm
-            y = row * 60  # 0, 100, 200, ... cm
+            x = col * 30  # 0 vagy 100 cm
+            y = row * 30  # 0, 100, 200, ... cm
             z = 0          # mind a földön
             
             # Orientáció (síkban fekszenek, normál felfelé mutat)
@@ -96,7 +96,7 @@ class MultiArUcoSLAM:
                 map_data = json.load(f)
             
             self.reference_marker_id = map_data.get('reference_marker_id')
-            self.MARKER_SIZE = map_data.get('marker_size', 10)
+            self.MARKER_SIZE = map_data.get('marker_size', 10.5)
             
             # Marker pozíciók betöltése
             for marker_id_str, data in map_data['markers'].items():
@@ -287,7 +287,7 @@ class MultiArUcoSLAM:
                 map_data = json.load(f)
             
             self.reference_marker_id = map_data.get('reference_marker_id')
-            self.MARKER_SIZE = map_data.get('marker_size', 10)
+            self.MARKER_SIZE = map_data.get('marker_size', 10.5)
             
             for marker_id_str, data in map_data['markers'].items():
                 marker_id = int(marker_id_str)
@@ -307,7 +307,7 @@ class MultiArUcoSLAM:
 
 def main():
     # SLAM rendszer inicializálása
-    slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10)
+    slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
     
     # Kamera
     cap = cv.VideoCapture(4)

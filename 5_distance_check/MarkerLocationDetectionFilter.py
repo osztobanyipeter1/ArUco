@@ -143,8 +143,8 @@ class MultiArUcoSLAM:
             col = i % 2
             
             # Pozíciók centiméterben
-            x = col * 60  # 0 vagy 30 cm
-            y = row * 60  # 0, 30, 60, ... cm
+            x = col * 30  # 0 vagy 30 cm
+            y = row * 30  # 0, 30, 60, ... cm
             z = 0         # mind a földön
             
             # Orientáció (síkban fekszenek, normál felfelé mutat)
