@@ -105,6 +105,10 @@ class MultiArUcoSLAM:
             [-self.MARKER_SIZE/2, -self.MARKER_SIZE/2, 0]
         ], dtype=np.float32)
         
+        # Súlyozási paraméterek
+        self.distance_weight_factor = 1.5  # Távolság súlyozási faktor
+        self.distance_normalization = 30.0  # Távolság normalizálás
+        
         # Előre definiált marker térkép betöltése
         self.load_predefined_map("predefined_marker_map.json")
         
@@ -182,6 +186,26 @@ class MultiArUcoSLAM:
             print(f"Hiba a marker térkép betöltésekor: {e}")
             map_data = self.create_predefined_map(filename)
             self.load_predefined_map(filename)
+
+    def calculate_single_marker_position(self, marker_id, data):
+        """Egy marker alapján kamera pozíció számítása"""
+        rvec = data['rvec']
+        tvec = data['tvec'].reshape(3,1)
+        
+        R_m_c, _ = cv.Rodrigues(rvec)
+        R_w_m, t_w_m = self.marker_world_positions[marker_id]
+        t_w_m = np.asarray(t_w_m).reshape(3, 1)
+        
+        R_w_c = R_w_m @ R_m_c.T
+        t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec
+        
+        return t_w_c.flatten()
+    
+    def calculate_distance_weight(self, distance):
+        """Távolság alapú súly számolása"""
+        # Közelebbi markerek nagyobb súllyal
+        distance_weight = 1.0 / max(1.0, (distance * self.distance_weight_factor / self.distance_normalization)**2)
+        return distance_weight
     
     def detect_and_estimate_poses(self, frame):
         #Markerek észlelése és pózok becslése
@@ -213,6 +237,7 @@ class MultiArUcoSLAM:
                         'rvec': rvec,
                         'tvec': tvec,
                         'corners': corners,
+                        'distance': np.linalg.norm(tvec),
                         'confidence': confidence,
                         'reprojection_error': reprojection_error
                     }
@@ -240,41 +265,38 @@ class MultiArUcoSLAM:
         return True
     
     def update_marker_map(self, detected_markers):
-        #Marker térkép frissítése – súlyozott átlag a marker konfidenciák alapján
+        """Marker térkép frissítése részletes kiírással"""
         if not detected_markers:
             return None
 
         camera_positions = []
         weights = []
+        marker_distances = []
+        individual_positions = []
+        
+        print("\n" + "="*60)
+        print("EGYEDI MARKER POZÍCIÓK:")
         
         for marker_id, data in detected_markers.items():
             if marker_id not in self.marker_world_positions:
                 continue
 
-            rvec = data['rvec']
-            tvec = data['tvec'].reshape(3,1)
+            individual_position = self.calculate_single_marker_position(marker_id, data)
+            camera_positions.append(individual_position)
+            individual_positions.append((marker_id, individual_position))
             
-            R_m_c, _ = cv.Rodrigues(rvec)
-            R_w_m, t_w_m = self.marker_world_positions[marker_id]
-            t_w_m = np.asarray(t_w_m).reshape(3, 1)
+            distance = data['distance']
+            confidence = data.get('confidence', 0.5)
+            distance_weight = self.calculate_distance_weight(distance)
+            final_weight = distance_weight * confidence
             
-            R_w_c = R_w_m @ R_m_c.T
-            t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec
-            
-            camera_positions.append(t_w_c.flatten())
-            
-            # Súly számolása a marker konfidencia és re-projection error alapján
-            detection_confidence = data.get('confidence', 0.5)
-            weight = detection_confidence
-            
-            # Közelebbi markerek nagyobb súllyal
-            distance = np.linalg.norm(tvec)
-            distance_weight = 1.0 / max(1.0, (distance*1.5 / 10.0)**2)
-
-            print("Distance:", distance)
-            
-            final_weight = weight * distance_weight
             weights.append(final_weight)
+            marker_distances.append((marker_id, distance))
+            
+            # Tömör kiírás
+            print(f"Marker {marker_id:2d}: dist={distance:5.1f}cm, conf={confidence:.2f}, "
+                f"weight={final_weight:.3f}, pos=({individual_position[0]:6.1f}, "
+                f"{individual_position[1]:6.1f}, {individual_position[2]:6.1f})")
             
         if not camera_positions:
             return None
@@ -290,6 +312,26 @@ class MultiArUcoSLAM:
         cam_pos = np.zeros(3)
         for i, pos in enumerate(camera_positions):
             cam_pos += pos * weights[i]
+        
+        # Összehasonlítás
+        print("\nELTÉRÉSEK A VÉGSŐ POZÍCIÓTÓL:")
+        max_diff = 0
+        min_diff = float('inf')
+        
+        for marker_id, pos in individual_positions:
+            diff = np.linalg.norm(pos - cam_pos)
+            max_diff = max(max_diff, diff)
+            min_diff = min(min_diff, diff)
+            print(f"Marker {marker_id:2d}: {diff:5.1f}cm eltérés")
+        
+        # Legközelebbi marker
+        if marker_distances:
+            closest_marker = min(marker_distances, key=lambda x: x[1])
+            print(f"\nLegközelebbi marker: {closest_marker[0]} ({closest_marker[1]:.1f}cm)")
+            print(f"Eltérések tartománya: {min_diff:.1f}cm - {max_diff:.1f}cm")
+        
+        print(f"\nVÉGSŐ POZÍCIÓ: X={cam_pos[0]:6.1f}, Y={cam_pos[1]:6.1f}, Z={cam_pos[2]:6.1f}")
+        print("="*60)
         
         # Outlier szűrés
         if not self.is_position_valid(cam_pos, detected_markers):
