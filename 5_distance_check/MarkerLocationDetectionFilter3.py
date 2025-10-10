@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import json
 import os
+import math
 
 #SIMA MINDENMENTES
-#JEGYZET: 
 
 class MultiArUcoSLAM:
 
@@ -56,10 +56,10 @@ class MultiArUcoSLAM:
         map_data = {
             'reference_marker_id': 0,
             'markers': {},
-            'marker_size': self.MARKER_SIZE #itt megkapja a 10,5-es fizikai marker méretet
+            'marker_size': self.MARKER_SIZE
         }
         
-        # Markerek elhelyezése 2-es sorban növekvő sorrendben, 30 cm távolsággal
+        # Markerek elhelyezése 2-es sorban növekvő sorrendben, 60 cm távolsággal
         for i in range(20):
             row = i // 2
             col = i % 2
@@ -67,10 +67,10 @@ class MultiArUcoSLAM:
             # Pozíciók centiméterben
             x = col * 30
             y = row * 30
-            z = 0 #mind vízszintes
+            z = 0
             
             # Orientáció
-            R = np.eye(3) #semmi forgatás
+            R = np.eye(3)
             
             map_data['markers'][str(i)] = {
                 'rotation_matrix': R.tolist(),
@@ -84,6 +84,7 @@ class MultiArUcoSLAM:
         print(f"Előre definiált marker térkép létrehozva: {filename}")
         return map_data
     '''
+
     #Előre definiált marker térkép betöltése
     def load_predefined_map(self, filename="predefined_marker_map.json"):
         
@@ -132,15 +133,62 @@ class MultiArUcoSLAM:
                     # Konfidencia számítása a marker méretéből
                     confidence = self.calculate_marker_confidence(corners) #kiszámolja a megbízhatósági értéket
                     
+                    # Betekintési szög számítása
+                    view_angle = self.calculate_view_angle(rvec, tvec) #új függvény a betekintési szög számításához
+                    
                     detected_markers[marker_id] = { #eltároljuk ezt az összes adatot ami fel van sorolva
                         'rvec': rvec,
                         'tvec': tvec,
                         'corners': corners,
                         'distance': distance,
-                        'confidence': confidence
+                        'confidence': confidence,
+                        'view_angle': view_angle  # hozzáadjuk a betekintési szöget
                     }
         
         return detected_markers #visszaadjuk tároláshoz
+    
+    # Betekintési szög számítása
+    def calculate_view_angle(self, rvec, tvec):
+        """
+        Kiszámolja a betekintési szöget a markerhez képest.
+        A szög a kamera nézeti iránya és a marker normálvektora között.
+        
+        rvec: marker forgási vektora (3x1)
+        tvec: marker pozíció vektora (3x1)
+        
+        return: szög fokban (0-90 fok), ahol 0=főnézet, 90=élnézet
+        """
+        # Átalakítjuk a forgási vektort forgási mátrixszá
+        R_marker, _ = cv.Rodrigues(rvec)
+        
+        # Marker normálvektora (Z irány a marker koordináta-rendszerében)
+        marker_normal = np.array([0, 0, 1])  # Marker síkja a Z=0 síkban van
+        
+        # Normálvektor átalakítása kamerakoordináta-rendszerbe
+        normal_in_camera = R_marker @ marker_normal
+        
+        # Kamera nézeti iránya (a kamera a Z irányba néz)
+        camera_view_direction = np.array([0, 0, 1])
+        
+        # Szög számítása a két vektor között
+        dot_product = np.dot(normal_in_camera, camera_view_direction)
+        norms = np.linalg.norm(normal_in_camera) * np.linalg.norm(camera_view_direction)
+        
+        # Biztonsági ellenőrzés
+        if norms == 0:
+            return 90.0
+        
+        cos_angle = dot_product / norms
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Biztonsági korlát
+        
+        # Szög radiánban, majd átváltás fokba
+        angle_rad = np.arccos(cos_angle)
+        angle_deg = np.degrees(angle_rad)
+        
+        # A szög mindig 0-90 fok között legyen (abszolút érték)
+        view_angle = min(angle_deg, 180 - angle_deg)
+        
+        return view_angle
     
     #Marker konfidencia számítása a méret alapján
     def calculate_marker_confidence(self, corners):
@@ -191,6 +239,24 @@ class MultiArUcoSLAM:
             weight = 1.0 - (distance - min_distance) / (max_distance - min_distance) * 0.9 #súlyozás, azért 0.9 a szorzó, hogy a legtávolabbi marker is kapjon egy nagyon pici súlyt.
             return max(weight, 0.1)
     
+    def calculate_view_angle_weight(self, view_angle):
+        """
+        Betekintési szög alapú súly számítása.
+        Minél kisebb a szög (közelebb a főnézethez), annál nagyobb súlyt kap.
+        """
+        # 0 fok = főnézet (max súly), 90 fok = élnézet (min súly)
+        max_angle = 90.0
+        min_angle = 20.0  # 20 fok alatt nem használjuk a markert
+        
+        if view_angle <= min_angle:
+            return 0.0  # 20 fok alatt nem használjuk
+        elif view_angle >= max_angle:
+            return 0.1  # 90 fok felett minimális súly
+        else:
+            # Lineáris interpoláció 20-90 fok között
+            weight = 1.0 - (view_angle - min_angle) / (max_angle - min_angle) * 0.9
+            return max(weight, 0.1)
+        
     def calculate_camera_position(self, detected_markers):
         #Kamera pozíció számítása az előre definiált térkép alapján
         if not detected_markers:
@@ -206,21 +272,29 @@ class MultiArUcoSLAM:
                 continue
 
             individual_position = self.calculate_single_marker_position(marker_id, data) #bemenet marker id és data (rvec, tvec, ...) (marker pozícióból, és kamera-marker relativ pozicióból)
-            camera_positions.append(individual_position)
-            individual_positions.append((marker_id, individual_position))#kimenet [x,y,z] kamera pozíciós koordináták 
             
             #ez a rész számolja a súlyt
             distance = data['distance'] #távolság kinyerése
             confidence = data.get('confidence', 0.5) #confidence értéke kinyerése
+            view_angle = data.get('view_angle', 45.0) #betekintési szög kinyerése
             distance_weight = self.calculate_distance_weight(distance) #távolság súly számítás
-            final_weight = distance_weight * confidence #végső súly
+            angle_weight = self.calculate_view_angle_weight(view_angle) #betekintési szög súly számítás
             
+            # Ha a szög súly 0, akkor kihagyjuk ezt a markert
+            if angle_weight == 0.0:
+                print(f"Marker {marker_id} kihagyva - túl kicsi betekintési szög: {view_angle:.1f}°")
+                continue
+                
+            final_weight = distance_weight * angle_weight * confidence #végső súly - most már tartalmazza a szög súlyt is
+            
+            camera_positions.append(individual_position)
+            individual_positions.append((marker_id, individual_position))#kimenet [x,y,z] kamera pozíciós koordináták 
             weights.append(final_weight) #adatok begyűjtése
             marker_distances.append((marker_id, distance)) #adatok begyűjtése
             
-            print(f"Marker {marker_id:2d}: dist={distance:5.1f}cm, conf={confidence:.2f}, "
-                f"weight={final_weight:.3f}, pos=({individual_position[0]:6.1f}, "
-                f"{individual_position[1]:6.1f}, {individual_position[2]:6.1f})")
+            print(f"Marker {marker_id:2d}: dist={distance:5.1f}cm, angle={view_angle:4.1f}°, "
+                  f"conf={confidence:.2f}, weight={final_weight:.3f}, "
+                  f"pos=({individual_position[0]:6.1f}, {individual_position[1]:6.1f}, {individual_position[2]:6.1f})")
         
         if not camera_positions:
             return None
@@ -321,6 +395,7 @@ class MultiArUcoSLAM:
         plt.pause(0.01) #ennyi ideje van frissíteni a matplotlibnek a képernyőt
 
 
+
 def main():
     # SLAM rendszer inicializálása
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
@@ -363,16 +438,27 @@ def main():
                 cv.drawFrameAxes(frame, slam.cam_mat, slam.dist_coef, 
                                data['rvec'], data['tvec'], 4, 4)
                 
-                # Marker ID és távolság
-                distance = data['distance']
+                # Marker ID, távolság és betekintési szög
+                distance = np.linalg.norm(data['tvec'])
+                view_angle = data.get('view_angle', 0)
                 
-                text = f"ID: {marker_id} | Dist: {distance:.1f}cm"
+                # Szín kiválasztása a betekintési szög alapján
+                if view_angle < 20:
+                    color = (255, 0, 0)  # Piros - nem használjuk
+                    status = "NEM HASZNÁLT"
+                else:
+                    color = (0, 255, 0)  # Zöld - jó nézet
+                    status = ""
+                
+                text = f"ID: {marker_id} | Dist: {distance:.1f}cm | Angle: {view_angle:.1f}° {status}"
                 cv.putText(frame, text, tuple(corners[0]), 
-                          cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                          cv.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
             # Státusz információk
             status_text = [
-                f"FPS: {fps:.1f}"
+                f"FPS: {fps:.1f}",
+                f"Markerek száma: {len(slam.marker_world_positions)}",
+                f"Észlelt markerek: {list(detected_markers.keys()) if detected_markers else 'Nincs'}",
             ]
             
             if camera_position is not None:
@@ -383,9 +469,14 @@ def main():
                           cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
             cv.imshow("Multi-ArUco SLAM", frame)
+            
+            # Kilépés
+            key = cv.waitKey(1)
+            if key == ord('q'):
+                break
     
     except Exception as e:
-        print(f"Hiba: {e}")
+        print(f"Hiba történt: {e}")
         import traceback
         traceback.print_exc()
     
