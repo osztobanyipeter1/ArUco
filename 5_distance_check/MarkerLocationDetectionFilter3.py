@@ -239,7 +239,7 @@ class MultiArUcoSLAM:
             weight = 1.0 - (distance - min_distance) / (max_distance - min_distance) * 0.9 #súlyozás, azért 0.9 a szorzó, hogy a legtávolabbi marker is kapjon egy nagyon pici súlyt.
             return max(weight, 0.1)
     
-    def calculate_view_angle_weight(self, view_angle):
+    def calculate_view_angle_weight(self, view_angle, distance):
         """
         Betekintési szög alapú súly számítása.
         Minél kisebb a szög (közelebb a főnézethez), annál nagyobb súlyt kap.
@@ -249,7 +249,10 @@ class MultiArUcoSLAM:
         min_angle = 20.0  # 20 fok alatt nem használjuk a markert
         
         if view_angle <= min_angle:
-            return 0.0  # 20 fok alatt nem használjuk
+            if distance <= 50:
+                return 1.0
+            else:
+                return 0.0  # 20 fok alatt nem használjuk
         elif view_angle >= max_angle:
             return 0.1  # 90 fok felett minimális súly
         else:
@@ -278,11 +281,11 @@ class MultiArUcoSLAM:
             confidence = data.get('confidence', 0.5) #confidence értéke kinyerése
             view_angle = data.get('view_angle', 45.0) #betekintési szög kinyerése
             distance_weight = self.calculate_distance_weight(distance) #távolság súly számítás
-            angle_weight = self.calculate_view_angle_weight(view_angle) #betekintési szög súly számítás
+            angle_weight = self.calculate_view_angle_weight(view_angle, distance) #betekintési szög súly számítás
             
             # Ha a szög súly 0, akkor kihagyjuk ezt a markert
             if angle_weight == 0.0:
-                print(f"Marker {marker_id} kihagyva - túl kicsi betekintési szög: {view_angle:.1f}°")
+                print(f"Marker {marker_id} kihagyva - túl kicsi betekintési szög vagy túl messze van: {view_angle:.1f}°, {distance:.1f}cm")
                 continue
                 
             final_weight = distance_weight * angle_weight * confidence #végső súly - most már tartalmazza a szög súlyt is
@@ -444,8 +447,12 @@ def main():
                 
                 # Szín kiválasztása a betekintési szög alapján
                 if view_angle < 20:
-                    color = (255, 0, 0)  # Piros - nem használjuk
-                    status = "NEM HASZNÁLT"
+                    if distance <50:
+                        color = (0,255,0)
+                        status = ""
+                    else:
+                        color = (255, 0, 0)  # Piros - nem használjuk
+                        status = "NEM HASZNÁLT"
                 else:
                     color = (0, 255, 0)  # Zöld - jó nézet
                     status = ""
