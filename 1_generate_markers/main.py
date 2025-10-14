@@ -8,7 +8,7 @@ marker_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
 MARKER_SIZE = 400  # pixels
 
 # generating unique IDs using for loop
-for id in range(20):  # genereting 20 markers
+for id in range(150):  # genereting 20 markers
     # using funtion to draw a marker
     marker_image = aruco.generateImageMarker(marker_dict, id, MARKER_SIZE)
     cv.imshow("img", marker_image)
