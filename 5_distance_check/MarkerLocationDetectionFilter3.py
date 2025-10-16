@@ -294,6 +294,19 @@ class MultiArUcoSLAM:
             individual_positions.append((marker_id, individual_position))#kimenet [x,y,z] kamera pozíciós koordináták 
             weights.append(final_weight) #adatok begyűjtése
             marker_distances.append((marker_id, distance)) #adatok begyűjtése
+
+            MAX_MARKERS = 3
+            if len(weights) > MAX_MARKERS:
+                sorted_indices = np.argsort(weights)[::-1]
+
+                top_indices = sorted_indices[:MAX_MARKERS]
+
+                camera_positions=[camera_positions[i] for i in top_indices]
+                individual_positions = [individual_positions[i] for i in top_indices]
+                weights = [weights[i] for i in top_indices]
+                marker_distances = [marker_distances[i] for i in top_indices]
+                print(f"A {MAX_MARKERS} legjobb marker: "
+                    f"{[id for id, _ in individual_positions]}")
             
             print(f"Marker {marker_id:2d}: dist={distance:5.1f}cm, angle={view_angle:4.1f}°, "
                   f"conf={confidence:.2f}, weight={final_weight:.3f}, "
