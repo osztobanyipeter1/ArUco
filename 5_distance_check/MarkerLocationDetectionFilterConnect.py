@@ -8,110 +8,173 @@ import os
 import math
 import socket
 import threading
-
-#SIMA MINDENMENTES
+import time
+import json
 
 class MultiArUcoSLAM:
 
-    def __init__(self, calib_data_path, marker_size=10.5):
+    def __init__(self, calib_data_path, marker_size=10.5, host='127.0.0.1', port=12345):
         # Kalibrációs adatok
-        calib_data = np.load(calib_data_path) #kamera kalibráció elérési útja
-        self.cam_mat = calib_data["camMatrix"] #kamera mátrix
-        self.dist_coef = calib_data["distCoef"] #lencse torzítási együtthatók
+        calib_data = np.load(calib_data_path)
+        self.cam_mat = calib_data["camMatrix"]
+        self.dist_coef = calib_data["distCoef"]
         
-        self.MARKER_SIZE = marker_size #fizikai marker méret
+        self.MARKER_SIZE = marker_size
         
         # ArUco beállítások
-        self.marker_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250) #max 250 5x5-ös markerrel dolgozunk
-        self.param_markers = aruco.DetectorParameters() #marker detektálási paraméter
-        self.detector = aruco.ArucoDetector(self.marker_dict, self.param_markers) #aruco detektor objektum a marker felismeréshez
+        self.marker_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
+        self.param_markers = aruco.DetectorParameters()
+        self.detector = aruco.ArucoDetector(self.marker_dict, self.param_markers)
         
         # Marker pozíciók tárolása világkoordináta-rendszerben
-        self.marker_world_positions = {}  # {id: (R, t)} (R=forgási mátrix (3x3), t=transzlációs vektor (3x1)) 
+        self.marker_world_positions = {}
         
         # Kamera trajektória
-        self.camera_positions = [] #Ebben tárolódnak a kamera pozíciók
+        self.camera_positions = []
+        self.camera_orientations = []  # Quaternion orientációk tárolása
         
-        # 3D marker pontok marker koordináta-rendszerben. A marker 4 sarkának 3D koordinátái, a marker középpontja az origoban van, a Z paraméter nulla, mert egy síkban van a marker
+        # 3D marker pontok
         self.marker_points = np.array([
-            [-self.MARKER_SIZE/2, self.MARKER_SIZE/2, 0],#bal fent
-            [self.MARKER_SIZE/2, self.MARKER_SIZE/2, 0],#jobb fent
-            [self.MARKER_SIZE/2, -self.MARKER_SIZE/2, 0],#jobb lent
-            [-self.MARKER_SIZE/2, -self.MARKER_SIZE/2, 0]#bal lent
+            [-self.MARKER_SIZE/2, self.MARKER_SIZE/2, 0],
+            [self.MARKER_SIZE/2, self.MARKER_SIZE/2, 0],
+            [self.MARKER_SIZE/2, -self.MARKER_SIZE/2, 0],
+            [-self.MARKER_SIZE/2, -self.MARKER_SIZE/2, 0]
         ], dtype=np.float32)
+        
+        # Socket kommunikáció a PointCloudMesh-hez
+        self.socket_host = host
+        self.socket_port = port
+        self.socket = None
+        self.setup_socket_connection()
         
         # Előre definiált marker térkép betöltése
         self.load_predefined_map("predefined_marker_map.json")
         
         # Vizualizáció inicializálása
-        plt.ion() #matplotlib real-time frissítés bekapcsolása
-        self.fig = plt.figure(figsize=(12, 10)) #ez a méret
-        self.ax = self.fig.add_subplot(111, projection='3d') #3D tengely létrehozása
+        plt.ion()
+        self.fig = plt.figure(figsize=(12, 10))
+        self.ax = self.fig.add_subplot(111, projection='3d')
         
         # Időzítés az FPS számoláshoz
-        self.prev_time = cv.getTickCount() #előző képkocka időbélyege
-        self.fps = 0 #ez kapja meg a kiszámolt képkocka/másodperc adatot
-
-    def rotation_vector_to_quaternion(self, rvec):
-        theta = np.linalg.norm(rvec)
-        if theta < 1e-6:
-            return 1.0, 0.0, 0.0, 0.0  # egységkvaternió
-
-        axis = rvec.flatten() / theta
-        qw = np.cos(theta / 2.0)
-        qx, qy, qz = axis * np.sin(theta / 2.0)
-        return qw, qx, qy, qz
-
-    
-    '''
-    def create_predefined_map(self, filename="predefined_marker_map.json"):
-        #Előre definiált marker térkép létrehozása
-        map_data = {
-            'reference_marker_id': 0,
-            'markers': {},
-            'marker_size': self.MARKER_SIZE
-        }
+        self.prev_time = cv.getTickCount()
+        self.fps = 0
         
-        # Markerek elhelyezése 2-es sorban növekvő sorrendben, 60 cm távolsággal
-        for i in range(20):
-            row = i // 2
-            col = i % 2
+        # Kamera orientáció követése
+        self.current_orientation = np.eye(3)  # Kezdeti orientáció (identitás mátrix)
+
+    def setup_socket_connection(self):
+        """Socket kapcsolat létrehozása a PointCloudMesh-hez"""
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.socket_host, self.socket_port))
+            print(f"Kapcsolódva a PointCloudMesh-hez: {self.socket_host}:{self.socket_port}")
+        except Exception as e:
+            print(f"Hiba a socket kapcsolat létrehozásakor: {e}")
+            self.socket = None
+
+    def send_pose_data(self, position, orientation_matrix):
+        """Kamera pozíció és orientáció küldése quaternion formátumban"""
+        if self.socket is None:
+            return
+        
+        try:
+            # EGYSZERŰ MEGOLDÁS: csak a quaternion komponensek megfordítása
+            quaternion = self.rotation_matrix_to_quaternion(orientation_matrix)
             
-            # Pozíciók centiméterben
-            x = col * 30
-            y = row * 30
-            z = 0
+            # Quaternion komponensek korrigálása
+            corrected_quaternion = np.array([
+                quaternion[0],  # w ugyanaz
+                -quaternion[1], # x megfordítva
+                -quaternion[2], # y megfordítva  
+                quaternion[3]   # z ugyanaz
+            ])
             
-            # Orientáció
-            R = np.eye(3)
+            # Pozíció transzformáció
+            transformed_position = np.array([
+                position[0],   # X
+                -position[1],  # Y megfordítva
+                -position[2]   # Z megfordítva
+            ])
             
-            map_data['markers'][str(i)] = {
-                'rotation_matrix': R.tolist(),
-                'translation_vector': [[x], [y], [z]]
+            # Pozíció méretarányosítása
+            scaled_position = transformed_position / 100.0
+            
+            # Adat csomag
+            pose_data = {
+                'position': {
+                    'x': float(scaled_position[0]),
+                    'y': float(scaled_position[1]), 
+                    'z': float(scaled_position[2])
+                },
+                'orientation': {
+                    'w': float(corrected_quaternion[0]),
+                    'x': float(corrected_quaternion[1]),
+                    'y': float(corrected_quaternion[2]),
+                    'z': float(corrected_quaternion[3])
+                }
             }
-        
-        # Fájl mentése
-        with open(filename, 'w') as f:
-            json.dump(map_data, f, indent=2)
-        
-        print(f"Előre definiált marker térkép létrehozva: {filename}")
-        return map_data
-    '''
+            
+            data_str = json.dumps(pose_data) + '\n'
+            self.socket.send(data_str.encode())
+            
+        except Exception as e:
+            print(f"Hiba az adatküldéskor: {e}")
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+            self.setup_socket_connection()
 
-    #Előre definiált marker térkép betöltése
+    def rotation_matrix_to_quaternion(self, R):
+        """Forgási mátrix átalakítása quaternionná"""
+        # Biztosítjuk, hogy a mátrix ortogonális legyen
+        U, S, Vt = np.linalg.svd(R)
+        R = U @ Vt
+        
+        # Quaternion számítás
+        trace = np.trace(R)
+        
+        if trace > 0:
+            S = np.sqrt(trace + 1.0) * 2
+            w = 0.25 * S
+            x = (R[2, 1] - R[1, 2]) / S
+            y = (R[0, 2] - R[2, 0]) / S
+            z = (R[1, 0] - R[0, 1]) / S
+        elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            S = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+            w = (R[2, 1] - R[1, 2]) / S
+            x = 0.25 * S
+            y = (R[0, 1] + R[1, 0]) / S
+            z = (R[0, 2] + R[2, 0]) / S
+        elif R[1, 1] > R[2, 2]:
+            S = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+            w = (R[0, 2] - R[2, 0]) / S
+            x = (R[0, 1] + R[1, 0]) / S
+            y = 0.25 * S
+            z = (R[1, 2] + R[2, 1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+            w = (R[1, 0] - R[0, 1]) / S
+            x = (R[0, 2] + R[2, 0]) / S
+            y = (R[1, 2] + R[2, 1]) / S
+            z = 0.25 * S
+        
+        quaternion = np.array([w, x, y, z])
+        # Normalizálás
+        norm = np.linalg.norm(quaternion)
+        if norm > 0:
+            quaternion /= norm
+        
+        return quaternion
+
     def load_predefined_map(self, filename="predefined_marker_map.json"):
-        
-        '''if not os.path.exists(filename):
-            print("Előre definiált marker térkép nem található, létrehozás...")
-            self.create_predefined_map(filename)'''
-        
         try:
             with open(filename, 'r') as f:
                 map_data = json.load(f)
             
-            self.MARKER_SIZE = map_data.get('marker_size', 10.5) #itt is biztosra megyünk, hogy 10.5 legyen a méret
+            self.MARKER_SIZE = map_data.get('marker_size', 10.5)
             
-            # Marker pozíciók betöltése
             for marker_id_str, data in map_data['markers'].items():
                 marker_id = int(marker_id_str)
                 R = np.array(data['rotation_matrix'])
@@ -120,237 +183,181 @@ class MultiArUcoSLAM:
                         
         except Exception as e:
             print(f"Hiba a marker térkép betöltésekor: {e}")
-            '''map_data = self.create_predefined_map(filename)
-            self.load_predefined_map(filename)'''
-    
-    #Markerek észlelése és pózok becslése
+
     def detect_and_estimate_poses(self, frame):
+        gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        marker_corners, marker_IDs, _ = self.detector.detectMarkers(gray_frame)
         
-        gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY) #átalakítja a képet szürkeárnyalatosra
-        marker_corners, marker_IDs, _ = self.detector.detectMarkers(gray_frame) #detektálja a markeret, és visszaadja a cornereket, ID-t
-        
-        detected_markers = {} #ebben fogja tárolni a markereket
+        detected_markers = {}
         
         if marker_corners and marker_IDs is not None:
-            for i, (corners, marker_id) in enumerate(zip(marker_corners, marker_IDs.flatten())): #flattennel 2D-ről 1D-re alakít
-                corners = corners.reshape(-1, 2).astype(np.float32) #(N,2) formátumba alakítás
-                ret, rvec, tvec = cv.solvePnP( #kiszámolja a marker pozícióját és orientációját a kamerához képest
-                    self.marker_points, corners, #észlelet marker sarkok (self.marker_points), és 2D pontok (corners)
-                    self.cam_mat, self.dist_coef #kamera paraméterek
+            for i, (corners, marker_id) in enumerate(zip(marker_corners, marker_IDs.flatten())):
+                corners = corners.reshape(-1, 2).astype(np.float32)
+                ret, rvec, tvec = cv.solvePnP(
+                    self.marker_points, corners,
+                    self.cam_mat, self.dist_coef
                 )
                 
-                if ret: #itt a ret megnézi, hogy a ret kapott e sikeres eredményt az előző for ciklusból
-                    # Távolság számítása
-                    distance = np.linalg.norm(tvec) #vektor hosszának számolása
+                if ret:
+                    distance = np.linalg.norm(tvec)
+                    confidence = self.calculate_marker_confidence(corners)
+                    view_angle = self.calculate_view_angle(rvec, tvec)
                     
-                    # Konfidencia számítása a marker méretéből
-                    confidence = self.calculate_marker_confidence(corners) #kiszámolja a megbízhatósági értéket
-                    
-                    # Betekintési szög számítása
-                    view_angle = self.calculate_view_angle(rvec, tvec) #új függvény a betekintési szög számításához
-                    
-                    detected_markers[marker_id] = { #eltároljuk ezt az összes adatot ami fel van sorolva
+                    detected_markers[marker_id] = {
                         'rvec': rvec,
                         'tvec': tvec,
                         'corners': corners,
                         'distance': distance,
                         'confidence': confidence,
-                        'view_angle': view_angle  # hozzáadjuk a betekintési szöget
+                        'view_angle': view_angle
                     }
         
-        return detected_markers #visszaadjuk tároláshoz
-    
-    # Betekintési szög számítása
+        return detected_markers
+
     def calculate_view_angle(self, rvec, tvec):
-        """
-        Kiszámolja a betekintési szöget a markerhez képest.
-        A szög a kamera nézeti iránya és a marker normálvektora között.
-        
-        rvec: marker forgási vektora (3x1)
-        tvec: marker pozíció vektora (3x1)
-        
-        return: szög fokban (0-90 fok), ahol 0=főnézet, 90=élnézet
-        """
-        # Átalakítjuk a forgási vektort forgási mátrixszá
         R_marker, _ = cv.Rodrigues(rvec)
-        
-        # Marker normálvektora (Z irány a marker koordináta-rendszerében)
-        marker_normal = np.array([0, 0, 1])  # Marker síkja a Z=0 síkban van
-        
-        # Normálvektor átalakítása kamerakoordináta-rendszerbe
+        marker_normal = np.array([0, 0, 1])
         normal_in_camera = R_marker @ marker_normal
-        
-        # Kamera nézeti iránya (a kamera a Z irányba néz)
         camera_view_direction = np.array([0, 0, 1])
         
-        # Szög számítása a két vektor között
         dot_product = np.dot(normal_in_camera, camera_view_direction)
         norms = np.linalg.norm(normal_in_camera) * np.linalg.norm(camera_view_direction)
         
-        # Biztonsági ellenőrzés
         if norms == 0:
             return 90.0
         
         cos_angle = dot_product / norms
-        cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Biztonsági korlát
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
         
-        # Szög radiánban, majd átváltás fokba
         angle_rad = np.arccos(cos_angle)
         angle_deg = np.degrees(angle_rad)
-        
-        # A szög mindig 0-90 fok között legyen (abszolút érték)
         view_angle = min(angle_deg, 180 - angle_deg)
         
         return view_angle
-    
-    #Marker konfidencia számítása a méret alapján
+
     def calculate_marker_confidence(self, corners):
-        
-        if corners is None or len(corners) < 4: #ellenőrzi, hogy megvannak-e érvényesen a sarokpontok
+        if corners is None or len(corners) < 4:
             return 0.0
         
-        width = np.linalg.norm(corners[0] - corners[1]) #marker méretének számolása a képen
+        width = np.linalg.norm(corners[0] - corners[1])
         height = np.linalg.norm(corners[1] - corners[2])
         avg_size = (width + height) / 2
         
-        # Minél nagyobb a marker a képen, annál megbízhatóbb
-        min_size = 20  # minimum pixel méret
-        max_size = 200  # maximum pixel méret
+        min_size = 20
+        max_size = 200
         
-        confidence = (avg_size - min_size) / (max_size - min_size) #a távolság, vagyis méret alapján confidence értéket kap a marker
-        confidence = np.clip(confidence, 0.1, 1.0)  # 0.1 és 1.0 közé korlátozás
+        confidence = (avg_size - min_size) / (max_size - min_size)
+        confidence = np.clip(confidence, 0.1, 1.0)
         
         return confidence
-    
-    #Egyetlen marker alapján kamera pozíció számítása
+
     def calculate_single_marker_position(self, marker_id, data):
+        rvec = data['rvec']
+        tvec = data['tvec'].reshape(3,1)
         
-        rvec = data['rvec'] #forgási vektor (3x1), marker orientációja a kamerához képest
-        tvec = data['tvec'].reshape(3,1) #pozíció vektor (3x1), marker pozíciója a kamerához képest
-        
-        R_m_c, _ = cv.Rodrigues(rvec) #forgási vektor átalakítása forgási mátrixxá
-        R_w_m, t_w_m = self.marker_world_positions[marker_id] #vektor forgási mátrixa és világkoordináta pozíciója
+        R_m_c, _ = cv.Rodrigues(rvec)
+        R_w_m, t_w_m = self.marker_world_positions[marker_id]
         t_w_m = np.asarray(t_w_m).reshape(3, 1)
         
-        R_w_c = R_w_m @ R_m_c.T #R_m_c.T a kamera forgási mátrixa transzponáltan? (@=mátrix szorzás)
-        t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec #t_w_c a kamera poíciója a világkoordináta rendszerben
+        R_w_c = R_w_m @ R_m_c.T
+        t_w_c = t_w_m - R_w_m @ R_m_c.T @ tvec
         
-        return t_w_c.flatten() #2D array 1D-re állítása
-    
+        return R_w_c, t_w_c.flatten()
+
     def calculate_distance_weight(self, distance):
-        #Távolság alapú súly számítása
-        # Minél közelebb van a marker, annál nagyobb súlyt kap
-        max_distance = 200  # cm
-        min_distance = 20   # cm
+        max_distance = 200
+        min_distance = 20
         
         if distance <= min_distance:
             return 1.0
         elif distance >= max_distance:
             return 0.1
         else:
-            # Lineáris interpoláció
-            weight = 1.0 - (distance - min_distance) / (max_distance - min_distance) * 0.9 #súlyozás, azért 0.9 a szorzó, hogy a legtávolabbi marker is kapjon egy nagyon pici súlyt.
+            weight = 1.0 - (distance - min_distance) / (max_distance - min_distance) * 0.9
             return max(weight, 0.1)
-    
+
     def calculate_view_angle_weight(self, view_angle, distance):
-        """
-        Betekintési szög alapú súly számítása.
-        Minél kisebb a szög (közelebb a főnézethez), annál nagyobb súlyt kap.
-        """
-        # 0 fok = főnézet (max súly), 90 fok = élnézet (min súly)
         max_angle = 90.0
-        min_angle = 20.0  # 20 fok alatt nem használjuk a markert
+        min_angle = 20.0
         
         if view_angle <= min_angle:
             if distance <= 50:
                 return 1.0
             else:
-                return 0.0  # 20 fok alatt nem használjuk
+                return 0.0
         elif view_angle >= max_angle:
-            return 0.1  # 90 fok felett minimális súly
+            return 0.1
         else:
-            # Lineáris interpoláció 20-90 fok között
             weight = 1.0 - (view_angle - min_angle) / (max_angle - min_angle) * 0.9
             return max(weight, 0.1)
-        
-    def calculate_camera_position(self, detected_markers):
-        #Kamera pozíció számítása az előre definiált térkép alapján
-        if not detected_markers:
-            return None
 
-        camera_positions = [] #markerek alapjám számolt kamera pozíció, vektorok [x,y,z]
-        weights = [] #számított súlyok (0 és 1 között)
-        individual_positions = [] #marker id alapján a pozíciók (marker id és vektor[x,y,z]) (Tuple)
-        marker_distances = [] #marker id-k és távolságok (marker id és distance) (Touple)
+    def calculate_camera_pose(self, detected_markers):
+        if not detected_markers:
+            return None, None
+
+        camera_positions = []
+        camera_orientations = []
+        weights = []
         
         for marker_id, data in detected_markers.items():
-            if marker_id not in self.marker_world_positions: #végigmegy az összes észlelt markeren, majd kihagyjuk azokat a markereket amik nincsenek a térképen
+            if marker_id not in self.marker_world_positions:
                 continue
 
-            individual_position = self.calculate_single_marker_position(marker_id, data) #bemenet marker id és data (rvec, tvec, ...) (marker pozícióból, és kamera-marker relativ pozicióból)
+            R_w_c, position = self.calculate_single_marker_position(marker_id, data)
             
-            #ez a rész számolja a súlyt
-            distance = data['distance'] #távolság kinyerése
-            confidence = data.get('confidence', 0.5) #confidence értéke kinyerése
-            view_angle = data.get('view_angle', 45.0) #betekintési szög kinyerése
-            distance_weight = self.calculate_distance_weight(distance) #távolság súly számítás
-            angle_weight = self.calculate_view_angle_weight(view_angle, distance) #betekintési szög súly számítás
+            distance = data['distance']
+            confidence = data.get('confidence', 0.5)
+            view_angle = data.get('view_angle', 45.0)
+            distance_weight = self.calculate_distance_weight(distance)
+            angle_weight = self.calculate_view_angle_weight(view_angle, distance)
             
-            # Ha a szög súly 0, akkor kihagyjuk ezt a markert
             if angle_weight == 0.0:
                 print(f"Marker {marker_id} kihagyva - túl kicsi betekintési szög vagy túl messze van: {view_angle:.1f}°, {distance:.1f}cm")
                 continue
                 
-            final_weight = distance_weight * angle_weight * confidence #végső súly - most már tartalmazza a szög súlyt is
+            final_weight = distance_weight * angle_weight * confidence
             
-            camera_positions.append(individual_position)
-            individual_positions.append((marker_id, individual_position))#kimenet [x,y,z] kamera pozíciós koordináták 
-            weights.append(final_weight) #adatok begyűjtése
-            marker_distances.append((marker_id, distance)) #adatok begyűjtése
+            camera_positions.append(position)
+            camera_orientations.append(R_w_c)
+            weights.append(final_weight)
 
             MAX_MARKERS = 3
             if len(weights) > MAX_MARKERS:
                 sorted_indices = np.argsort(weights)[::-1]
-
                 top_indices = sorted_indices[:MAX_MARKERS]
-
-                camera_positions=[camera_positions[i] for i in top_indices]
-                individual_positions = [individual_positions[i] for i in top_indices]
+                
+                camera_positions = [camera_positions[i] for i in top_indices]
+                camera_orientations = [camera_orientations[i] for i in top_indices]
                 weights = [weights[i] for i in top_indices]
-                marker_distances = [marker_distances[i] for i in top_indices]
-                print(f"A {MAX_MARKERS} legjobb marker: "
-                    f"{[id for id, _ in individual_positions]}")
-            
-            print(f"Marker {marker_id:2d}: dist={distance:5.1f}cm, angle={view_angle:4.1f}°, "
-                  f"conf={confidence:.2f}, weight={final_weight:.3f}, "
-                  f"pos=({individual_position[0]:6.1f}, {individual_position[1]:6.1f}, {individual_position[2]:6.1f})")
+                print(f"A {MAX_MARKERS} legjobb marker használata")
         
         if not camera_positions:
-            return None
+            return None, None
         
-        # Súlyozott átlag
+        # Súlyozott átlag a pozícióra és orientációra
         if weights:
             weights = np.array(weights)
-            weights = weights / np.sum(weights)  # Normalizálás
+            weights = weights / np.sum(weights)
             
-            cam_pos = np.zeros(3) #kamera pozíció inicializálása
-            for i, pos in enumerate(camera_positions):
+            cam_pos = np.zeros(3)
+            cam_orient = np.zeros((3, 3))
+            
+            for i, (pos, orient) in enumerate(zip(camera_positions, camera_orientations)):
                 cam_pos += pos * weights[i]
+                cam_orient += orient * weights[i]
+            
+            # Orientáció normalizálása
+            U, S, Vt = np.linalg.svd(cam_orient)
+            cam_orient = U @ Vt
         else:
-            # Egyszerű átlag, ha nincsenek súlyok
             cam_pos = np.mean(camera_positions, axis=0)
+            cam_orient = np.mean(camera_orientations, axis=0)
         
-        # Összegző kiírás
-        if individual_positions:
-            print(f"Összesen {len(individual_positions)} marker, súlyozott átlag: "
-                  f"({cam_pos[0]:.1f}, {cam_pos[1]:.1f}, {cam_pos[2]:.1f})")
-        
-        return cam_pos
-    
+        return cam_orient, cam_pos
+
     def calculate_fps(self):
-        #FPS számolása
         current_time = cv.getTickCount()
-        time_diff = (current_time - self.prev_time) / cv.getTickFrequency() #másodpercekben való megjelenése
+        time_diff = (current_time - self.prev_time) / cv.getTickFrequency()
         self.prev_time = current_time
         
         if time_diff > 0:
@@ -359,46 +366,54 @@ class MultiArUcoSLAM:
             self.fps = 0
         
         return self.fps
-    
-    #3D vizualizáció frissítése
-    def update_visualization(self, camera_position=None, detected_markers=None):
 
-        self.ax.clear()#törli az előző táblát a frissítéshez
+    def update_visualization(self, camera_position=None, camera_orientation=None, detected_markers=None):
+        self.ax.clear()
         
-        # Markerek megjelenítése
-        colors = plt.cm.tab10(np.linspace(0, 1, len(self.marker_world_positions))) #különböző szinekben
+        colors = plt.cm.tab10(np.linspace(0, 1, len(self.marker_world_positions)))
         
-        for i, (marker_id, (R, t)) in enumerate(self.marker_world_positions.items()): #marker sarkok átszámolása koordináta rendszerben
-            # Marker sarkok világkoordináta-rendszerben
+        for i, (marker_id, (R, t)) in enumerate(self.marker_world_positions.items()):
             world_corners = (R @ self.marker_points.T + t).T
-            
-            # Marker megjelenítése
-            self.ax.scatter(world_corners[:,0], world_corners[:,1], world_corners[:,2], #3D pontok megjelenítése
+            self.ax.scatter(world_corners[:,0], world_corners[:,1], world_corners[:,2],
                           c=[colors[i]], s=100, 
                           label=f'Marker {marker_id}')
             
-            # Marker kontúr
-            corners_plot = np.vstack([world_corners, world_corners[0]]) #itt adja hozzá az első pontot a végéhez, hogy bezárja a kontúrt
-            self.ax.plot(corners_plot[:,0], corners_plot[:,1], corners_plot[:,2], #vonalak rajzolása a kontúrhoz
+            corners_plot = np.vstack([world_corners, world_corners[0]])
+            self.ax.plot(corners_plot[:,0], corners_plot[:,1], corners_plot[:,2],
                         c=colors[i], linewidth=2)
         
-        # Kamera pozíció és trajektória
-        if camera_position is not None: #hozzáadja az új kamerapozit a listához
+        if camera_position is not None:
             self.camera_positions.append(camera_position)
+            if camera_orientation is not None:
+                self.camera_orientations.append(camera_orientation)
             
         if self.camera_positions:
-            cam_array = np.array(self.camera_positions) #lista konvertálás NumPy arrayyra
+            cam_array = np.array(self.camera_positions)
             
-            # Trajektória
             if len(self.camera_positions) > 1:
-                self.ax.plot(cam_array[:,0], cam_array[:,1], cam_array[:,2], #piros vonallal rajzolja a trajektóriát
+                self.ax.plot(cam_array[:,0], cam_array[:,1], cam_array[:,2],
                            'r-', alpha=0.8, linewidth=3, label='Kamera trajektória')
             
-            # Aktuális kamera pozíció
-            self.ax.scatter(cam_array[-1,0], cam_array[-1,1], cam_array[-1,2], #nagy piros pont a kamera aktuális pozíciója
+            self.ax.scatter(cam_array[-1,0], cam_array[-1,1], cam_array[-1,2],
                            c='red', s=200, marker='o', label='Kamera')
+            
+            # Kamera orientáció megjelenítése
+            if camera_orientation is not None and len(self.camera_positions) > 0:
+                current_pos = self.camera_positions[-1]
+                axis_length = 10
+                
+                # Kamera tengelyek
+                x_axis = current_pos + camera_orientation[:, 0] * axis_length
+                y_axis = current_pos + camera_orientation[:, 1] * axis_length  
+                z_axis = current_pos + camera_orientation[:, 2] * axis_length
+                
+                self.ax.plot([current_pos[0], x_axis[0]], [current_pos[1], x_axis[1]], [current_pos[2], x_axis[2]], 
+                           'r-', linewidth=2, label='X axis')
+                self.ax.plot([current_pos[0], y_axis[0]], [current_pos[1], y_axis[1]], [current_pos[2], y_axis[2]], 
+                           'g-', linewidth=2, label='Y axis')
+                self.ax.plot([current_pos[0], z_axis[0]], [current_pos[1], z_axis[1]], [current_pos[2], z_axis[2]], 
+                           'b-', linewidth=2, label='Z axis')
         
-        # Tengelyek és címkék
         self.ax.set_xlabel('X (cm)')
         self.ax.set_ylabel('Y (cm)')
         self.ax.set_zlabel('Z (cm)')
@@ -406,8 +421,7 @@ class MultiArUcoSLAM:
         
         self.ax.legend()
         
-        # Dinamikus határok
-        all_positions = [] #markerek és kamera pozi gyűjtése
+        all_positions = []
         for _, (_, t) in self.marker_world_positions.items():
             all_positions.append(t.flatten())
         if self.camera_positions:
@@ -416,28 +430,17 @@ class MultiArUcoSLAM:
         if all_positions:
             all_positions = np.array(all_positions)
             margin = 20
-            self.ax.set_xlim([all_positions[:,0].min()-margin, all_positions[:,0].max()+margin]) #automatikus tengelyhatárok a margó alapján
+            self.ax.set_xlim([all_positions[:,0].min()-margin, all_positions[:,0].max()+margin])
             self.ax.set_ylim([all_positions[:,1].min()-margin, all_positions[:,1].max()+margin])
             self.ax.set_zlim([max(0, all_positions[:,2].min()-margin), all_positions[:,2].max()+margin])
         
         plt.draw()
-        plt.pause(0.01) #ennyi ideje van frissíteni a matplotlibnek a képernyőt
-
+        plt.pause(0.01)
 
 def main():
-
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(("127.0.0.1", 12345))
-    server.listen(1)
-    print("Várakozás kapcsolatra...")
-    client, addr = server.accept()
-    print(f"Kapcsolódott: {addr}")
-
-    # SLAM rendszer inicializálása
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
     
-    # Kamera
-    cap = cv.VideoCapture(0)
+    cap = cv.VideoCapture(4)
     if not cap.isOpened():
         print("Hiba: Kamera nem elérhető!")
         return
@@ -451,50 +454,41 @@ def main():
                 print("Hiba: Kép beolvasása sikertelen!")
                 break
             
-            # FPS számolása
             fps = slam.calculate_fps()
-            
-            # Markerek észlelése
             detected_markers = slam.detect_and_estimate_poses(frame)
+            camera_orientation, camera_position = slam.calculate_camera_pose(detected_markers)
             
-            # Kamera pozíció számítása
-            camera_position = slam.calculate_camera_position(detected_markers)
+            # Adatok küldése a PointCloudMesh-nek
+            if camera_position is not None and camera_orientation is not None:
+                slam.send_pose_data(camera_position, camera_orientation)
+                print(f"Pozíció küldve: {camera_position}, Orientáció: {slam.rotation_matrix_to_quaternion(camera_orientation)}")
             
-            # Vizualizáció frissítése
-            slam.update_visualization(camera_position, detected_markers)
+            slam.update_visualization(camera_position, camera_orientation, detected_markers)
             
-            # Markerek rajzolása az eredeti képre
             for marker_id, data in detected_markers.items():
                 corners = data['corners'].astype(np.int32)
-                
-                # Marker kontúr
-                cv.polylines(frame, [corners], True, (0, 255, 255), 4, cv.LINE_AA) #sárga kontúr a marker mögé
-                
-                # Tengelyek rajzolása
+                cv.polylines(frame, [corners], True, (0, 255, 255), 4, cv.LINE_AA)
                 cv.drawFrameAxes(frame, slam.cam_mat, slam.dist_coef, 
                                data['rvec'], data['tvec'], 4, 4)
                 
-                # Marker ID, távolság és betekintési szög
                 distance = np.linalg.norm(data['tvec'])
                 view_angle = data.get('view_angle', 0)
                 
-                # Szín kiválasztása a betekintési szög alapján
                 if view_angle < 20:
-                    if distance <50:
+                    if distance < 50:
                         color = (0,255,0)
                         status = ""
                     else:
-                        color = (255, 0, 0)  # Piros - nem használjuk
+                        color = (255, 0, 0)
                         status = "NEM HASZNÁLT"
                 else:
-                    color = (0, 255, 0)  # Zöld - jó nézet
+                    color = (0, 255, 0)
                     status = ""
                 
                 text = f"ID: {marker_id} | Dist: {distance:.1f}cm | Angle: {view_angle:.1f}° {status}"
                 cv.putText(frame, text, tuple(corners[0]), 
                           cv.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
-            # Státusz információk
             status_text = [
                 f"FPS: {fps:.1f}",
                 f"Markerek száma: {len(slam.marker_world_positions)}",
@@ -502,28 +496,7 @@ def main():
             ]
             
             if camera_position is not None:
-                try:
-                    # Kvaternió inicializálása alapból egységkvaternió (ha nincs orientáció)
-                    qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
-
-                    # Ha vannak markereid, számolja a kvaterniót az első markerből vagy kombinálva
-                    if detected_markers:
-                        first_marker_id = list(detected_markers.keys())[0]
-                        rvec = detected_markers[first_marker_id]['rvec']
-                        qw, qx, qy, qz = slam.rotation_vector_to_quaternion(rvec)
-
-
-                    data_to_send = {
-                        "position": camera_position.tolist(),
-                        "quaternion": [qw, qx, qy, qz]
-                    }
-                    client.sendall((json.dumps(data_to_send) + "\n").encode())
-
-                except Exception as e:
-                    print(f"Hiba küldés közben: {e}")
-                    break
-
-                #status_text.append(f"Pozíció: [{camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f}]")
+                status_text.append(f"Pozíció: [{camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f}]")
             
             for i, text in enumerate(status_text):
                 cv.putText(frame, text, (10, 30 + i * 25), 
@@ -531,7 +504,6 @@ def main():
             
             cv.imshow("Multi-ArUco SLAM", frame)
             
-            # Kilépés
             key = cv.waitKey(1)
             if key == ord('q'):
                 break
@@ -546,7 +518,8 @@ def main():
         cv.destroyAllWindows()
         plt.ioff()
         plt.close()
-
+        if slam.socket:
+            slam.socket.close()
 
 if __name__ == "__main__":
     main()
