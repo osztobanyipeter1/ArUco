@@ -73,38 +73,39 @@ class MultiArUcoSLAM:
             self.socket = None
 
     def send_pose_data(self, position, orientation_matrix):
-        """Kamera pozíció és orientáció küldése quaternion formátumban"""
         if self.socket is None:
             return
         
+        # Csak minden 2. képkockánál küldj adatot
+        if hasattr(self, 'send_count'):
+            self.send_count += 1
+            if self.send_count % 2 != 0:
+                return
+        else:
+            self.send_count = 1
+        
         try:
-            # EGYSZERŰ MEGOLDÁS: csak a quaternion komponensek megfordítása
+            # Egyszerűsített számítások
             quaternion = self.rotation_matrix_to_quaternion(orientation_matrix)
             
-            # Quaternion komponensek korrigálása
             corrected_quaternion = np.array([
-                quaternion[0],  # w ugyanaz
-                -quaternion[1], # x megfordítva
-                -quaternion[2], # y megfordítva  
-                quaternion[3]   # z ugyanaz
+                quaternion[0],
+                -quaternion[1], 
+                -quaternion[2],
+                quaternion[3]
             ])
             
-            # Pozíció transzformáció
             transformed_position = np.array([
-                position[0],   # X
-                -position[1],  # Y megfordítva
-                -position[2]   # Z megfordítva
-            ])
+                position[0],
+                -position[1],
+                -position[2]
+            ]) / 100.0
             
-            # Pozíció méretarányosítása
-            scaled_position = transformed_position / 100.0
-            
-            # Adat csomag
             pose_data = {
                 'position': {
-                    'x': float(scaled_position[0]),
-                    'y': float(scaled_position[1]), 
-                    'z': float(scaled_position[2])
+                    'x': float(transformed_position[0]),
+                    'y': float(transformed_position[1]), 
+                    'z': float(transformed_position[2])
                 },
                 'orientation': {
                     'w': float(corrected_quaternion[0]),
@@ -119,12 +120,7 @@ class MultiArUcoSLAM:
             
         except Exception as e:
             print(f"Hiba az adatküldéskor: {e}")
-            try:
-                self.socket.close()
-            except:
-                pass
             self.socket = None
-            self.setup_socket_connection()
 
     def rotation_matrix_to_quaternion(self, R):
         """Forgási mátrix átalakítása quaternionná"""
@@ -372,35 +368,45 @@ class MultiArUcoSLAM:
         
         colors = plt.cm.tab10(np.linspace(0, 1, len(self.marker_world_positions)))
         
+        # MARKER NÉGYZETEK MEGJELENÍTÉSE - VÁLTOZATLAN
         for i, (marker_id, (R, t)) in enumerate(self.marker_world_positions.items()):
             world_corners = (R @ self.marker_points.T + t).T
             self.ax.scatter(world_corners[:,0], world_corners[:,1], world_corners[:,2],
-                          c=[colors[i]], s=100, 
-                          label=f'Marker {marker_id}')
+                      c=[colors[i]], s=50, 
+                      label=f'Marker {marker_id}')
             
             corners_plot = np.vstack([world_corners, world_corners[0]])
             self.ax.plot(corners_plot[:,0], corners_plot[:,1], corners_plot[:,2],
-                        c=colors[i], linewidth=2)
+                    c=colors[i], linewidth=1, alpha=0.8)
         
+        # Kamera pozíció kezelése - OPTIMALIZÁLT
         if camera_position is not None:
             self.camera_positions.append(camera_position)
             if camera_orientation is not None:
                 self.camera_orientations.append(camera_orientation)
             
+            # Korlátozd a trajektória hosszát
+            if len(self.camera_positions) > 50:
+                self.camera_positions.pop(0)
+                if self.camera_orientations:
+                    self.camera_orientations.pop(0)
+        
         if self.camera_positions:
             cam_array = np.array(self.camera_positions)
             
             if len(self.camera_positions) > 1:
-                self.ax.plot(cam_array[:,0], cam_array[:,1], cam_array[:,2],
-                           'r-', alpha=0.8, linewidth=3, label='Kamera trajektória')
+                # Csak az utolsó 30 pontot kösd össze
+                recent_positions = cam_array[-30:]
+                self.ax.plot(recent_positions[:,0], recent_positions[:,1], recent_positions[:,2],
+                       'r-', alpha=0.6, linewidth=2, label='Kamera trajektória')
             
             self.ax.scatter(cam_array[-1,0], cam_array[-1,1], cam_array[-1,2],
-                           c='red', s=200, marker='o', label='Kamera')
+                       c='red', s=100, marker='o', label='Kamera')
             
-            # Kamera orientáció megjelenítése
+            # Kamera orientáció megjelenítése - OPTIMALIZÁLT
             if camera_orientation is not None and len(self.camera_positions) > 0:
                 current_pos = self.camera_positions[-1]
-                axis_length = 10
+                axis_length = 8
                 
                 # Kamera tengelyek
                 x_axis = current_pos + camera_orientation[:, 0] * axis_length
@@ -408,116 +414,90 @@ class MultiArUcoSLAM:
                 z_axis = current_pos + camera_orientation[:, 2] * axis_length
                 
                 self.ax.plot([current_pos[0], x_axis[0]], [current_pos[1], x_axis[1]], [current_pos[2], x_axis[2]], 
-                           'r-', linewidth=2, label='X axis')
+                       'r-', linewidth=1, label='X axis')
                 self.ax.plot([current_pos[0], y_axis[0]], [current_pos[1], y_axis[1]], [current_pos[2], y_axis[2]], 
-                           'g-', linewidth=2, label='Y axis')
+                       'g-', linewidth=1, label='Y axis')
                 self.ax.plot([current_pos[0], z_axis[0]], [current_pos[1], z_axis[1]], [current_pos[2], z_axis[2]], 
-                           'b-', linewidth=2, label='Z axis')
+                       'b-', linewidth=1, label='Z axis')
         
         self.ax.set_xlabel('X (cm)')
         self.ax.set_ylabel('Y (cm)')
         self.ax.set_zlabel('Z (cm)')
         self.ax.set_title(f'Multi-ArUco SLAM - {len(self.marker_world_positions)} marker\nFPS: {self.fps:.1f}')
         
-        self.ax.legend()
+        # Egyszerűsített legenda
+        if len(self.marker_world_positions) > 0:
+            self.ax.legend(loc='upper left', fontsize='small')
         
+        # Határok beállítása - OPTIMALIZÁLT
         all_positions = []
         for _, (_, t) in self.marker_world_positions.items():
             all_positions.append(t.flatten())
         if self.camera_positions:
-            all_positions.extend(self.camera_positions)
+            all_positions.extend(self.camera_positions[-20:])
         
         if all_positions:
             all_positions = np.array(all_positions)
-            margin = 20
+            margin = 15
             self.ax.set_xlim([all_positions[:,0].min()-margin, all_positions[:,0].max()+margin])
             self.ax.set_ylim([all_positions[:,1].min()-margin, all_positions[:,1].max()+margin])
             self.ax.set_zlim([max(0, all_positions[:,2].min()-margin), all_positions[:,2].max()+margin])
         
         plt.draw()
-        plt.pause(0.01)
+        plt.pause(0.001)
 
 def main():
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
     
     cap = cv.VideoCapture(4)
-    if not cap.isOpened():
-        print("Hiba: Kamera nem elérhető!")
-        return
+    cap.set(cv.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv.CAP_PROP_FRAME_HEIGHT, 480)
     
-    cv.namedWindow("Multi-ArUco SLAM", cv.WINDOW_NORMAL)
+    # Számlálók a ritkított frissítésekhez
+    frame_count = 0
     
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("Hiba: Kép beolvasása sikertelen!")
                 break
+            
+            frame_count += 1
             
             fps = slam.calculate_fps()
             detected_markers = slam.detect_and_estimate_poses(frame)
             camera_orientation, camera_position = slam.calculate_camera_pose(detected_markers)
             
-            # Adatok küldése a PointCloudMesh-nek
-            if camera_position is not None and camera_orientation is not None:
+            # Ritkított adatküldés (minden 2. frame)
+            if frame_count % 2 == 0 and camera_position is not None and camera_orientation is not None:
                 slam.send_pose_data(camera_position, camera_orientation)
-                print(f"Pozíció küldve: {camera_position}, Orientáció: {slam.rotation_matrix_to_quaternion(camera_orientation)}")
             
-            slam.update_visualization(camera_position, camera_orientation, detected_markers)
+            # Ritkított vizualizáció (minden 3. frame)
+            if frame_count % 3 == 0:
+                slam.update_visualization(camera_position, camera_orientation, detected_markers)
             
+            # Egyszerűsített képkiírás
             for marker_id, data in detected_markers.items():
                 corners = data['corners'].astype(np.int32)
-                cv.polylines(frame, [corners], True, (0, 255, 255), 4, cv.LINE_AA)
-                cv.drawFrameAxes(frame, slam.cam_mat, slam.dist_coef, 
-                               data['rvec'], data['tvec'], 4, 4)
+                cv.polylines(frame, [corners], True, (0, 255, 255), 2, cv.LINE_AA)
                 
                 distance = np.linalg.norm(data['tvec'])
-                view_angle = data.get('view_angle', 0)
-                
-                if view_angle < 20:
-                    if distance < 50:
-                        color = (0,255,0)
-                        status = ""
-                    else:
-                        color = (255, 0, 0)
-                        status = "NEM HASZNÁLT"
-                else:
-                    color = (0, 255, 0)
-                    status = ""
-                
-                text = f"ID: {marker_id} | Dist: {distance:.1f}cm | Angle: {view_angle:.1f}° {status}"
+                text = f"ID: {marker_id} | {distance:.1f}cm"
                 cv.putText(frame, text, tuple(corners[0]), 
-                          cv.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                          cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
-            status_text = [
-                f"FPS: {fps:.1f}",
-                f"Markerek száma: {len(slam.marker_world_positions)}",
-                f"Észlelt markerek: {list(detected_markers.keys()) if detected_markers else 'Nincs'}",
-            ]
-            
-            if camera_position is not None:
-                status_text.append(f"Pozíció: [{camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f}]")
-            
-            for i, text in enumerate(status_text):
-                cv.putText(frame, text, (10, 30 + i * 25), 
-                          cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # Egyszerűbb status szöveg
+            cv.putText(frame, f"FPS: {fps:.1f}", (10, 30), 
+                      cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
             cv.imshow("Multi-ArUco SLAM", frame)
             
-            key = cv.waitKey(1)
-            if key == ord('q'):
+            if cv.waitKey(1) & 0xFF == ord('q'):
                 break
-    
-    except Exception as e:
-        print(f"Hiba történt: {e}")
-        import traceback
-        traceback.print_exc()
     
     finally:
         cap.release()
         cv.destroyAllWindows()
-        plt.ioff()
-        plt.close()
         if slam.socket:
             slam.socket.close()
 
