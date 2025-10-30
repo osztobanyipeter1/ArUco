@@ -73,34 +73,38 @@ class MultiArUcoSLAM:
             self.socket = None
 
     def send_pose_data(self, position, orientation_matrix):
+        """Kamera pozíció és orientáció küldése quaternion formátumban"""
         if self.socket is None:
             return
         
         # Csak minden 2. képkockánál küldj adatot
-        if hasattr(self, 'send_count'):
-            self.send_count += 1
-            if self.send_count % 2 != 0:
-                return
-        else:
-            self.send_count = 1
+        #if hasattr(self, 'send_count'):
+        #    self.send_count += 1
+        #    if self.send_count % 2 != 0:
+        #        return
+        #else:
+        #    self.send_count = 1
         
         try:
-            # Egyszerűsített számítások
+            # Egyszerűsített számítások: csak a quaternion komponensek megfordítása
             quaternion = self.rotation_matrix_to_quaternion(orientation_matrix)
             
+            #Quaternion komponensek korrigálása
             corrected_quaternion = np.array([
-                quaternion[0],
-                -quaternion[1], 
-                -quaternion[2],
-                quaternion[3]
+                quaternion[0], # w ugyanaz
+                -quaternion[1],# x megfordítva 
+                -quaternion[2],# y megfordítva
+                quaternion[3]  # z ugyanaz
             ])
             
+            #pozíció transzformáció
             transformed_position = np.array([
-                position[0],
-                -position[1],
-                -position[2]
-            ]) / 100.0
+                position[0], # X
+                -position[1],# Y megfordítva
+                -position[2] # Z megfordítva
+            ]) / 100.0 #pozíció méretarányosítása
             
+            #Adat csomag
             pose_data = {
                 'position': {
                     'x': float(transformed_position[0]),
@@ -120,7 +124,12 @@ class MultiArUcoSLAM:
             
         except Exception as e:
             print(f"Hiba az adatküldéskor: {e}")
+            try:
+                self.socket.close()
+            except:
+                pass
             self.socket = None
+            self.setup_socket_connection()
 
     def rotation_matrix_to_quaternion(self, R):
         """Forgási mátrix átalakítása quaternionná"""
@@ -317,7 +326,7 @@ class MultiArUcoSLAM:
             camera_orientations.append(R_w_c)
             weights.append(final_weight)
 
-            MAX_MARKERS = 3
+            MAX_MARKERS = 1
             if len(weights) > MAX_MARKERS:
                 sorted_indices = np.argsort(weights)[::-1]
                 top_indices = sorted_indices[:MAX_MARKERS]
@@ -379,7 +388,7 @@ class MultiArUcoSLAM:
             self.ax.plot(corners_plot[:,0], corners_plot[:,1], corners_plot[:,2],
                     c=colors[i], linewidth=1, alpha=0.8)
         
-        # Kamera pozíció kezelése - OPTIMALIZÁLT
+        # Kamera pozíció kezelése
         if camera_position is not None:
             self.camera_positions.append(camera_position)
             if camera_orientation is not None:
@@ -403,7 +412,7 @@ class MultiArUcoSLAM:
             self.ax.scatter(cam_array[-1,0], cam_array[-1,1], cam_array[-1,2],
                        c='red', s=100, marker='o', label='Kamera')
             
-            # Kamera orientáció megjelenítése - OPTIMALIZÁLT
+            # Kamera orientáció megjelenítése
             if camera_orientation is not None and len(self.camera_positions) > 0:
                 current_pos = self.camera_positions[-1]
                 axis_length = 8
@@ -425,16 +434,15 @@ class MultiArUcoSLAM:
         self.ax.set_zlabel('Z (cm)')
         self.ax.set_title(f'Multi-ArUco SLAM - {len(self.marker_world_positions)} marker\nFPS: {self.fps:.1f}')
         
-        # Egyszerűsített legenda
         if len(self.marker_world_positions) > 0:
             self.ax.legend(loc='upper left', fontsize='small')
         
-        # Határok beállítása - OPTIMALIZÁLT
+        # Határok beállítása
         all_positions = []
         for _, (_, t) in self.marker_world_positions.items():
             all_positions.append(t.flatten())
         if self.camera_positions:
-            all_positions.extend(self.camera_positions[-20:])
+            all_positions.extend(self.camera_positions)
         
         if all_positions:
             all_positions = np.array(all_positions)
@@ -450,6 +458,9 @@ def main():
     slam = MultiArUcoSLAM("../calib_data/MultiMatrix.npz", marker_size=10.5)
     
     cap = cv.VideoCapture(4)
+    if not cap.isOpened():
+        print("Kamera nem elérhető!")
+        return
     cap.set(cv.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, 480)
     
@@ -468,13 +479,13 @@ def main():
             detected_markers = slam.detect_and_estimate_poses(frame)
             camera_orientation, camera_position = slam.calculate_camera_pose(detected_markers)
             
-            # Ritkított adatküldés (minden 2. frame)
-            if frame_count % 2 == 0 and camera_position is not None and camera_orientation is not None:
+            #frame_count % 2 == 0 and 
+            if camera_position is not None and camera_orientation is not None:
                 slam.send_pose_data(camera_position, camera_orientation)
             
             # Ritkított vizualizáció (minden 3. frame)
-            if frame_count % 3 == 0:
-                slam.update_visualization(camera_position, camera_orientation, detected_markers)
+            #if frame_count % 2 == 0:
+            slam.update_visualization(camera_position, camera_orientation, detected_markers)
             
             # Egyszerűsített képkiírás
             for marker_id, data in detected_markers.items():
