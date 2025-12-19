@@ -48,7 +48,7 @@ class MultiArUcoSLAM:
         self.setup_socket_connection()
         
         # Előre definiált marker térkép betöltése
-        self.load_predefined_map("predefined_marker_map.json")
+        self.load_predefined_map("predefined_marker_map_one.json")
         
         # Vizualizáció inicializálása
         plt.ion()
@@ -173,7 +173,7 @@ class MultiArUcoSLAM:
         
         return quaternion
 
-    def load_predefined_map(self, filename="predefined_marker_map.json"):
+    def load_predefined_map(self, filename="predefined_marker_map_one.json"):
         try:
             with open(filename, 'r') as f:
                 map_data = json.load(f)
@@ -286,7 +286,7 @@ class MultiArUcoSLAM:
         min_angle = 20.0
         
         if view_angle <= min_angle:
-            if distance <= 50:
+            if distance <= 35:
                 return 1.0
             else:
                 return 0.0
@@ -493,7 +493,8 @@ def main():
                 cv.polylines(frame, [corners], True, (0, 255, 255), 2, cv.LINE_AA)
                 
                 distance = np.linalg.norm(data['tvec'])
-                text = f"ID: {marker_id} | {distance:.1f}cm"
+                view_angle = data.get('view_angle', 45.0)
+                text = f"ID: {marker_id} | {distance:.1f}cm | {view_angle:.1f}"
                 cv.putText(frame, text, tuple(corners[0]), 
                           cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
