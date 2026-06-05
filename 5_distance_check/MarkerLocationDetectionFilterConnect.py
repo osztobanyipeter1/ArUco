@@ -48,7 +48,7 @@ class MultiArUcoSLAM:
         self.setup_socket_connection()
         
         # Előre definiált marker térkép betöltése
-        self.load_predefined_map("predefined_marker_map_one.json")
+        self.load_predefined_map("predefined_marker_map.json")
         
         # Vizualizáció inicializálása
         plt.ion()
@@ -173,7 +173,7 @@ class MultiArUcoSLAM:
         
         return quaternion
 
-    def load_predefined_map(self, filename="predefined_marker_map_one.json"):
+    def load_predefined_map(self, filename="predefined_marker_map.json"):
         try:
             with open(filename, 'r') as f:
                 map_data = json.load(f)
